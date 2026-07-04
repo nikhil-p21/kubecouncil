@@ -1,0 +1,194 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  annotations:
+    kubecouncil.io/criticality: critical
+    kubecouncil.io/min-replicas: "2"
+    kubecouncil.io/max-replicas: "5"
+    kubecouncil.io/dependencies: checkout
+    kubecouncil.io/degradation-modes: none
+    kubecouncil.io/optional: "false"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+    spec:
+      containers:
+        - name: app
+          image: kubecouncil-demo:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: gateway-config
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout
+  annotations:
+    kubecouncil.io/criticality: critical
+    kubecouncil.io/min-replicas: "2"
+    kubecouncil.io/max-replicas: "6"
+    kubecouncil.io/dependencies: payment,recommendation
+    kubecouncil.io/degradation-modes: queue-admission
+    kubecouncil.io/optional: "false"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: checkout
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: checkout
+    spec:
+      containers:
+        - name: app
+          image: kubecouncil-demo:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: checkout-config
+          resources:
+            requests:
+              cpu: 450m
+              memory: 512Mi
+            limits:
+              cpu: 900m
+              memory: 768Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment
+  annotations:
+    kubecouncil.io/criticality: critical
+    kubecouncil.io/min-replicas: "2"
+    kubecouncil.io/max-replicas: "4"
+    kubecouncil.io/dependencies: none
+    kubecouncil.io/degradation-modes: none
+    kubecouncil.io/optional: "false"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payment
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payment
+    spec:
+      containers:
+        - name: app
+          image: kubecouncil-demo:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: payment-config
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recommendation
+  annotations:
+    kubecouncil.io/criticality: important
+    kubecouncil.io/min-replicas: "1"
+    kubecouncil.io/max-replicas: "4"
+    kubecouncil.io/dependencies: none
+    kubecouncil.io/degradation-modes: cached
+    kubecouncil.io/optional: "false"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: recommendation
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: recommendation
+    spec:
+      containers:
+        - name: app
+          image: kubecouncil-demo:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: recommendation-config
+          resources:
+            requests:
+              cpu: 300m
+              memory: 256Mi
+            limits:
+              cpu: 600m
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-worker
+  annotations:
+    kubecouncil.io/criticality: optional
+    kubecouncil.io/min-replicas: "0"
+    kubecouncil.io/max-replicas: "1"
+    kubecouncil.io/dependencies: none
+    kubecouncil.io/degradation-modes: suspend
+    kubecouncil.io/optional: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: analytics-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: analytics-worker
+    spec:
+      containers:
+        - name: app
+          image: kubecouncil-demo:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: analytics-worker-config
+          resources:
+            requests:
+              cpu: 600m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi

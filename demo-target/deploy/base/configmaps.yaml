@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+data:
+  SERVICE_NAME: gateway
+  LATENCY_MS: "20"
+  CPU_ITERATIONS: "3000"
+  CHECKOUT_URL: http://checkout/work
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: checkout-config
+data:
+  SERVICE_NAME: checkout
+  LATENCY_MS: "120"
+  CPU_ITERATIONS: "12000"
+  PAYMENT_URL: http://payment/work
+  RECOMMENDATION_URL: http://recommendation/work
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payment-config
+data:
+  SERVICE_NAME: payment
+  LATENCY_MS: "80"
+  CPU_ITERATIONS: "5000"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: recommendation-config
+data:
+  SERVICE_NAME: recommendation
+  MODE: live
+  LATENCY_MS: "180"
+  CPU_ITERATIONS: "9000"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: analytics-worker-config
+data:
+  SERVICE_NAME: analytics-worker
+  LATENCY_MS: "10"
+  CPU_ITERATIONS: "40000"

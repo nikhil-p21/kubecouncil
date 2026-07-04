@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kubecouncil-demo
+resources:
+  - ../../base
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: kubecouncil-demo
+      app.kubernetes.io/managed-by: kustomize
+images:
+  # Replace this with a pullable registry image before deploying to GKE.
+  - name: kubecouncil-demo
+    newName: us-docker.pkg.dev/example-project/kubecouncil-demo/kubecouncil-demo
+    newTag: replace-me
