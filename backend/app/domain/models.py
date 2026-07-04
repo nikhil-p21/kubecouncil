@@ -2,7 +2,15 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import AnyUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AnyUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 
 class KubeCouncilModel(BaseModel):
@@ -47,6 +55,7 @@ class RepositoryConnection(KubeCouncilModel):
     ref: str = Field(min_length=1)
     deployment_path: str = Field(min_length=1)
     auth_token_name: str | None = None
+    auth_token: SecretStr | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("deployment_path")
     @classmethod
