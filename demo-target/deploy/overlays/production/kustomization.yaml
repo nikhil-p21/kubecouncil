@@ -8,7 +8,6 @@ labels:
       app.kubernetes.io/part-of: kubecouncil-demo
       app.kubernetes.io/managed-by: kustomize
 images:
-  # Replace this with a pullable registry image before deploying to GKE.
   - name: kubecouncil-demo
-    newName: us-docker.pkg.dev/example-project/kubecouncil-demo/kubecouncil-demo
-    newTag: replace-me
+    newName: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil/kubecouncil-demo
+    newTag: 4e1f6a84c445
