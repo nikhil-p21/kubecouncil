@@ -15,6 +15,7 @@ from app.domain.models import (
     ExperimentStatus,
     HpaBounds,
     LoadTestResult,
+    LoadTestStatus,
     ManifestResource,
     PullRequestResult,
     RehearsalPlan,
@@ -25,6 +26,7 @@ from app.domain.models import (
     RepositorySnapshot,
     ResourceRequests,
     ScenarioObjective,
+    ScenarioResults,
     ScenarioSpec,
     ServiceProfile,
     ServiceProposal,
@@ -165,6 +167,20 @@ def action() -> CouncilAction:
             objective=ScenarioObjective(success_rate_minimum=0.95, p95_latency_ms_maximum=2000),
         ),
         load_result(),
+        ScenarioResults(
+            run_id="run-1",
+            scenario=ScenarioSpec(
+                name="flash-sale",
+                baseline_virtual_users=5,
+                pressure_virtual_users=40,
+                duration_seconds=45,
+                objective=ScenarioObjective(success_rate_minimum=0.95, p95_latency_ms_maximum=2000),
+            ),
+            baseline=load_result("baseline").model_copy(
+                update={"status": LoadTestStatus.PASSED}
+            ),
+            pressure=load_result("pressure"),
+        ),
         ServiceProposal(
             service_name="checkout",
             proposed_actions=(action(),),

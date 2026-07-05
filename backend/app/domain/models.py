@@ -35,6 +35,17 @@ class RehearsalStatus(StrEnum):
     DELETED = "deleted"
 
 
+class LoadTestStatus(StrEnum):
+    PASSED = "passed"
+    FAILED = "failed"
+
+
+class LoadTestFailureType(StrEnum):
+    OBJECTIVE = "objective"
+    INFRASTRUCTURE = "infrastructure"
+    MALFORMED_OUTPUT = "malformed_output"
+
+
 class ExperimentStatus(StrEnum):
     SUCCESSFUL = "successful"
     UNSUCCESSFUL = "unsuccessful"
@@ -236,6 +247,15 @@ class LoadTestResult(KubeCouncilModel):
     success_rate: float = Field(ge=0, le=1)
     p95_latency_ms: float = Field(ge=0)
     errors: tuple[str, ...] = ()
+    status: LoadTestStatus | None = None
+    failure_type: LoadTestFailureType | None = None
+
+
+class ScenarioResults(KubeCouncilModel):
+    run_id: str = Field(min_length=1)
+    scenario: ScenarioSpec
+    baseline: LoadTestResult | None = None
+    pressure: LoadTestResult | None = None
 
 
 class CouncilAction(KubeCouncilModel):

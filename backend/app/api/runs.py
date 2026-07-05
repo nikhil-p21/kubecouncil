@@ -3,13 +3,15 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.repositories import get_run_store
-from app.domain.interfaces import KubernetesClient, ManifestRenderer, RunStore
+from app.domain.interfaces import KubernetesClient, LoadTestRunner, ManifestRenderer, RunStore
 from app.domain.models import (
     AnalysisResult,
     DependencyEdge,
+    LoadTestResult,
     RehearsalState,
     RehearsalStatus,
     RepositorySnapshot,
+    ScenarioResults,
     ValidationResult,
     ValidationStatus,
 )
@@ -20,12 +22,19 @@ from app.kubernetes.kustomize import (
     ManifestRenderError,
 )
 from app.rehearsal.planner import RehearsalPlanner, RehearsalPlanningError
+from app.scenarios.k6 import (
+    FLASH_SALE_SCENARIO,
+    KubectlK6LoadTestRunner,
+    LoadTestInfrastructureError,
+    LoadTestOutputError,
+)
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
 _manifest_renderer = KustomizeManifestRenderer()
 _rehearsal_planner = RehearsalPlanner()
 _kubernetes_client = KubectlKubernetesClient()
+_load_test_runner = KubectlK6LoadTestRunner()
 
 
 def get_manifest_renderer() -> ManifestRenderer:
@@ -38,6 +47,10 @@ def get_rehearsal_planner() -> RehearsalPlanner:
 
 def get_kubernetes_client() -> KubernetesClient:
     return _kubernetes_client
+
+
+def get_load_test_runner() -> LoadTestRunner:
+    return _load_test_runner
 
 
 def error_detail(code: str, message: str) -> dict[str, str]:
@@ -222,3 +235,95 @@ def delete_rehearsal(
     )
     store.put(run_id, "rehearsal_state", deleted)
     return deleted
+
+
+@router.post(
+    "/{run_id}/baseline",
+    response_model=LoadTestResult,
+    status_code=status.HTTP_200_OK,
+)
+def run_baseline(
+    run_id: str,
+    runner: Annotated[LoadTestRunner, Depends(get_load_test_runner)],
+    store: Annotated[RunStore, Depends(get_run_store)],
+) -> LoadTestResult:
+    return _run_scenario_phase(run_id, "baseline", runner, store)
+
+
+@router.post(
+    "/{run_id}/pressure",
+    response_model=LoadTestResult,
+    status_code=status.HTTP_200_OK,
+)
+def run_pressure(
+    run_id: str,
+    runner: Annotated[LoadTestRunner, Depends(get_load_test_runner)],
+    store: Annotated[RunStore, Depends(get_run_store)],
+) -> LoadTestResult:
+    return _run_scenario_phase(run_id, "pressure", runner, store)
+
+
+@router.get(
+    "/{run_id}/results",
+    response_model=ScenarioResults,
+    status_code=status.HTTP_200_OK,
+)
+def get_results(
+    run_id: str,
+    store: Annotated[RunStore, Depends(get_run_store)],
+) -> ScenarioResults:
+    stored_results = store.get(run_id, "scenario_results")
+    if isinstance(stored_results, ScenarioResults):
+        return stored_results
+    return ScenarioResults(run_id=run_id, scenario=FLASH_SALE_SCENARIO)
+
+
+def _run_scenario_phase(
+    run_id: str,
+    phase: str,
+    runner: LoadTestRunner,
+    store: RunStore,
+) -> LoadTestResult:
+    stored_state = store.get(run_id, "rehearsal_state")
+    if (
+        not isinstance(stored_state, RehearsalState)
+        or stored_state.status != RehearsalStatus.DEPLOYED
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=error_detail("rehearsal_not_deployed", "run does not have a deployed rehearsal"),
+        )
+
+    try:
+        result = runner.run(stored_state.namespace, FLASH_SALE_SCENARIO, phase)
+    except LoadTestOutputError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=error_detail("load_test_output_malformed", str(exc)),
+        ) from exc
+    except LoadTestInfrastructureError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=error_detail("load_test_infrastructure_failed", str(exc)),
+        ) from exc
+
+    existing = store.get(run_id, "scenario_results")
+    results = (
+        existing
+        if isinstance(existing, ScenarioResults)
+        else ScenarioResults(run_id=run_id, scenario=FLASH_SALE_SCENARIO)
+    )
+    if phase == "baseline":
+        results = results.model_copy(update={"baseline": result})
+        store.put(run_id, "baseline_result", result)
+    elif phase == "pressure":
+        results = results.model_copy(update={"pressure": result})
+        store.put(run_id, "pressure_result", result)
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=error_detail("unsupported_load_test_phase", f"unsupported phase: {phase}"),
+        )
+    store.put(run_id, "scenario", FLASH_SALE_SCENARIO)
+    store.put(run_id, "scenario_results", results)
+    return result
