@@ -18,6 +18,9 @@ from app.domain.models import (
     ManifestResource,
     PullRequestResult,
     RehearsalPlan,
+    RehearsalResource,
+    RehearsalState,
+    RehearsalStatus,
     RepositoryConnection,
     RepositorySnapshot,
     ResourceRequests,
@@ -117,6 +120,32 @@ def action() -> CouncilAction:
             services=(),
             resource_quota_cpu_millis=1000,
             resource_quota_memory_mib=1024,
+        ),
+        RehearsalState(
+            run_id="run-1",
+            namespace="kc-rehearsal-run-1",
+            status=RehearsalStatus.DEPLOYED,
+            plan=RehearsalPlan(
+                run_id="run-1",
+                namespace="kc-rehearsal-run-1",
+                source=DeploymentSource(
+                    repository=snapshot(),
+                    kustomization_path="deploy/overlays/production/kustomization.yaml",
+                    rendered_resource_count=1,
+                ),
+                services=(),
+                resource_quota_cpu_millis=1000,
+                resource_quota_memory_mib=1024,
+            ),
+            resources=(
+                RehearsalResource(
+                    api_version="apps/v1",
+                    kind="Deployment",
+                    name="checkout",
+                    namespace="kc-rehearsal-run-1",
+                ),
+            ),
+            readiness=ValidationResult(status=ValidationStatus.PASSED),
         ),
         AnalysisResult(
             run_id="run-1",

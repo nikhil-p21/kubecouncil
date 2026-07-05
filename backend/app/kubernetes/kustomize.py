@@ -3,7 +3,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 from app.domain.interfaces import ManifestRenderer
 from app.domain.models import (

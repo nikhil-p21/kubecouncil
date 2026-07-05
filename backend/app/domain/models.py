@@ -28,6 +28,13 @@ class ValidationStatus(StrEnum):
     FAILED = "failed"
 
 
+class RehearsalStatus(StrEnum):
+    PLANNED = "planned"
+    DEPLOYED = "deployed"
+    FAILED = "failed"
+    DELETED = "deleted"
+
+
 class ExperimentStatus(StrEnum):
     SUCCESSFUL = "successful"
     UNSUCCESSFUL = "unsuccessful"
@@ -158,6 +165,42 @@ class RehearsalPlan(KubeCouncilModel):
     compatibility_issues: tuple[CompatibilityIssue, ...] = ()
     resource_quota_cpu_millis: int = Field(gt=0)
     resource_quota_memory_mib: int = Field(gt=0)
+    overlay_path: str | None = None
+    rendered_resources: tuple[ManifestResource, ...] = ()
+    safety_substitutions: tuple[str, ...] = ()
+
+    @field_validator("namespace")
+    @classmethod
+    def namespace_is_rehearsal_only(cls, value: str) -> str:
+        return _validate_rehearsal_namespace(value)
+
+
+class ValidationResult(KubeCouncilModel):
+    status: ValidationStatus
+    errors: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
+class RehearsalResource(KubeCouncilModel):
+    api_version: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    namespace: str
+
+    @field_validator("namespace")
+    @classmethod
+    def namespace_is_rehearsal_only(cls, value: str) -> str:
+        return _validate_rehearsal_namespace(value)
+
+
+class RehearsalState(KubeCouncilModel):
+    run_id: str = Field(min_length=1)
+    namespace: str
+    status: RehearsalStatus
+    plan: RehearsalPlan
+    resources: tuple[RehearsalResource, ...] = ()
+    readiness: ValidationResult
+    message: str | None = None
 
     @field_validator("namespace")
     @classmethod
@@ -212,12 +255,6 @@ class ServiceProposal(KubeCouncilModel):
     service_name: str = Field(min_length=1)
     proposed_actions: tuple[CouncilAction, ...]
     rationale: str = Field(min_length=1)
-
-
-class ValidationResult(KubeCouncilModel):
-    status: ValidationStatus
-    errors: tuple[str, ...] = ()
-    warnings: tuple[str, ...] = ()
 
 
 class CouncilPlan(KubeCouncilModel):

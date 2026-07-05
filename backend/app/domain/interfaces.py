@@ -9,10 +9,12 @@ from app.domain.models import (
     LoadTestResult,
     PullRequestResult,
     RehearsalPlan,
+    RehearsalResource,
     RepositoryConnection,
     RepositorySnapshot,
     ScenarioSpec,
     ServiceProfile,
+    ValidationResult,
 )
 
 
@@ -39,7 +41,10 @@ class ManifestRenderer(Protocol):
 class KubernetesClient(Protocol):
     """Performs namespace-scoped rehearsal operations."""
 
-    def create_rehearsal(self, plan: RehearsalPlan) -> None:
+    def create_rehearsal(self, plan: RehearsalPlan) -> tuple[RehearsalResource, ...]:
+        ...
+
+    def validate_rehearsal(self, plan: RehearsalPlan) -> ValidationResult:
         ...
 
     def delete_rehearsal(self, namespace: str) -> None:

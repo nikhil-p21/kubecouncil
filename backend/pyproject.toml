@@ -12,6 +12,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "httpx2>=0.28.0",
   "mypy>=1.10.0",
   "pytest>=8.2.0",
   "ruff>=0.5.0",
@@ -21,6 +22,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "integration: tests requiring external services or a configured Kubernetes context",
+]
 
 [tool.ruff]
 line-length = 100

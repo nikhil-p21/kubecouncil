@@ -20,6 +20,7 @@ from app.domain.models import (
     LoadTestResult,
     PullRequestResult,
     RehearsalPlan,
+    RehearsalResource,
     RepositoryConnection,
     RepositorySnapshot,
     ScenarioSpec,
@@ -71,9 +72,29 @@ class FakeKubernetesClient(KubernetesClient):
     def __init__(self) -> None:
         self.created: dict[str, RehearsalPlan] = {}
         self.deleted: list[str] = []
+        self.validated: list[str] = []
+        self.fail_validation = False
 
-    def create_rehearsal(self, plan: RehearsalPlan) -> None:
+    def create_rehearsal(self, plan: RehearsalPlan) -> tuple[RehearsalResource, ...]:
         self.created[plan.namespace] = plan
+        return tuple(
+            RehearsalResource(
+                api_version=resource.api_version,
+                kind=resource.kind,
+                name=resource.name,
+                namespace=plan.namespace,
+            )
+            for resource in plan.rendered_resources
+        )
+
+    def validate_rehearsal(self, plan: RehearsalPlan) -> ValidationResult:
+        self.validated.append(plan.namespace)
+        if self.fail_validation:
+            return ValidationResult(
+                status=ValidationStatus.FAILED,
+                errors=("fake validation failure",),
+            )
+        return ValidationResult(status=ValidationStatus.PASSED)
 
     def delete_rehearsal(self, namespace: str) -> None:
         self.deleted.append(namespace)
