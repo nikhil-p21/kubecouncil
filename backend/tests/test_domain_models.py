@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.domain.models import (
+    AnalysisResult,
     CompatibilityIssue,
     CompatibilitySeverity,
     CouncilAction,
@@ -14,6 +15,7 @@ from app.domain.models import (
     ExperimentStatus,
     HpaBounds,
     LoadTestResult,
+    ManifestResource,
     PullRequestResult,
     RehearsalPlan,
     RepositoryConnection,
@@ -73,6 +75,15 @@ def action() -> CouncilAction:
             repository=snapshot(),
             kustomization_path="deploy/overlays/production/kustomization.yaml",
             rendered_resource_count=3,
+            rendered_resources=(
+                ManifestResource(
+                    api_version="apps/v1",
+                    kind="Deployment",
+                    name="checkout",
+                    source="rendered.yaml#1:Deployment/checkout",
+                    content={"apiVersion": "apps/v1", "kind": "Deployment"},
+                ),
+            ),
         ),
         CompatibilityIssue(
             severity=CompatibilitySeverity.WARNING,
@@ -106,6 +117,16 @@ def action() -> CouncilAction:
             services=(),
             resource_quota_cpu_millis=1000,
             resource_quota_memory_mib=1024,
+        ),
+        AnalysisResult(
+            run_id="run-1",
+            source=DeploymentSource(
+                repository=snapshot(),
+                kustomization_path="deploy/overlays/production/kustomization.yaml",
+                rendered_resource_count=1,
+            ),
+            services=(),
+            dependency_edges=(DependencyEdge(from_service="checkout", to_service="payment"),),
         ),
         ScenarioSpec(
             name="flash-sale",

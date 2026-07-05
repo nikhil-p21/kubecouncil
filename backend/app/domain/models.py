@@ -76,18 +76,29 @@ class RepositorySnapshot(KubeCouncilModel):
     captured_at: datetime
 
 
-class DeploymentSource(KubeCouncilModel):
-    repository: RepositorySnapshot
-    kustomization_path: str = Field(min_length=1)
-    rendered_resource_count: int = Field(ge=0)
-
-
 class CompatibilityIssue(KubeCouncilModel):
     severity: CompatibilitySeverity
     resource_kind: str = Field(min_length=1)
     resource_name: str = Field(min_length=1)
     message: str = Field(min_length=1)
     source: str = Field(min_length=1)
+
+
+class ManifestResource(KubeCouncilModel):
+    api_version: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    namespace: str | None = None
+    source: str = Field(min_length=1)
+    content: dict[str, Any]
+
+
+class DeploymentSource(KubeCouncilModel):
+    repository: RepositorySnapshot
+    kustomization_path: str = Field(min_length=1)
+    rendered_resource_count: int = Field(ge=0)
+    rendered_resources: tuple[ManifestResource, ...] = ()
+    compatibility_issues: tuple[CompatibilityIssue, ...] = ()
 
 
 class DependencyEdge(KubeCouncilModel):
@@ -152,6 +163,14 @@ class RehearsalPlan(KubeCouncilModel):
     @classmethod
     def namespace_is_rehearsal_only(cls, value: str) -> str:
         return _validate_rehearsal_namespace(value)
+
+
+class AnalysisResult(KubeCouncilModel):
+    run_id: str = Field(min_length=1)
+    source: DeploymentSource
+    services: tuple[ServiceProfile, ...]
+    compatibility_issues: tuple[CompatibilityIssue, ...] = ()
+    dependency_edges: tuple[DependencyEdge, ...] = ()
 
 
 class ScenarioObjective(KubeCouncilModel):
