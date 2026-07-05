@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubecouncil-system
+  labels:
+    app.kubernetes.io/name: kubecouncil
+    app.kubernetes.io/managed-by: kubecouncil

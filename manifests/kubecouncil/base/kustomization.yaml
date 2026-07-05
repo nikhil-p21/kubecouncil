@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kubecouncil-system
+resources:
+  - namespace.yaml
+  - service-account-rbac.yaml
+  - configmap.yaml
+  - backend.yaml
+  - frontend.yaml
+  - cleanup-cronjob.yaml
+  - network-policy.yaml

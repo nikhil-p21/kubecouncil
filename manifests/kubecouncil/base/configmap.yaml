@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubecouncil-config
+data:
+  GOOGLE_CLOUD_LOCATION: asia-northeast1
+  GOOGLE_GENAI_USE_VERTEXAI: "true"
+  KUBECOUNCIL_GEMINI_MODEL: gemini-2.5-pro
+  KUBECOUNCIL_K6_IMAGE: grafana/k6:0.49.0
+  KUBECOUNCIL_REHEARSAL_TTL_HOURS: "6"

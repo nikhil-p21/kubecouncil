@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubecouncil-frontend
+  labels:
+    app.kubernetes.io/name: kubecouncil-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubecouncil-frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubecouncil-frontend
+    spec:
+      containers:
+        - name: nginx
+          image: us-docker.pkg.dev/PROJECT_ID/kubecouncil/kubecouncil-frontend:TAG
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubecouncil-frontend
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kubecouncil-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

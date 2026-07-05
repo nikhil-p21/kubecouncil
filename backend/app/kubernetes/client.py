@@ -25,8 +25,9 @@ class KubernetesOperationError(RuntimeError):
 class KubectlKubernetesClient:
     """Runs guarded Kubernetes operations for a generated rehearsal overlay."""
 
-    def __init__(self, command: Sequence[str] = ("kubectl",)) -> None:
+    def __init__(self, command: Sequence[str] = ("kubectl",), timeout_seconds: int = 180) -> None:
         self._command = tuple(command)
+        self._timeout_seconds = timeout_seconds
 
     def create_rehearsal(self, plan: RehearsalPlan) -> tuple[RehearsalResource, ...]:
         validation = self.validate_rehearsal(plan)
@@ -208,12 +209,18 @@ class KubectlKubernetesClient:
                 raise KubernetesOperationError(f"pod is not ready: {name}")
 
     def _run(self, arguments: Sequence[str]) -> str:
-        result = subprocess.run(
-            [*self._command, *arguments],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                [*self._command, *arguments],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise KubernetesOperationError(
+                f"kubectl command timed out after {self._timeout_seconds}s"
+            ) from exc
         if result.returncode != 0:
             stderr = result.stderr.strip() or "kubectl command failed"
             raise KubernetesOperationError(stderr)

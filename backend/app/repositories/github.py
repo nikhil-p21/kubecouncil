@@ -32,8 +32,9 @@ class MissingDeploymentPathError(RepositoryProviderError):
 class GitHubRepositoryProvider(RepositoryProvider):
     """Clones GitHub or local development repositories into isolated run workspaces."""
 
-    def __init__(self, workspace_root: Path) -> None:
+    def __init__(self, workspace_root: Path, git_timeout_seconds: int = 120) -> None:
         self.workspace_root = workspace_root
+        self._git_timeout_seconds = git_timeout_seconds
         self.workspace_root.mkdir(parents=True, exist_ok=True)
 
     def connect(self, connection: RepositoryConnection, run_id: str) -> RepositorySnapshot:
@@ -126,7 +127,12 @@ class GitHubRepositoryProvider(RepositoryProvider):
                 check=True,
                 capture_output=True,
                 text=True,
+                timeout=self._git_timeout_seconds,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise RepositoryCloneError(
+                f"git command timed out after {self._git_timeout_seconds}s"
+            ) from exc
         except subprocess.CalledProcessError as exc:
             stderr = self._redact(exc.stderr, token)
             stdout = self._redact(exc.stdout, token)

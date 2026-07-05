@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -24,6 +25,7 @@ REHEARSAL_LABELS = {
     "app.kubernetes.io/managed-by": "kubecouncil",
     "kubecouncil.io/rehearsal": "true",
 }
+DEFAULT_REHEARSAL_TTL_HOURS = 6
 OMITTED_KINDS = {"Ingress", "Secret"}
 GENERATED_KINDS = {"Namespace", "ResourceQuota"}
 CLUSTER_SCOPED_KINDS = {
@@ -211,6 +213,7 @@ def _namespace_resource(namespace: str, run_id: str) -> ManifestResource:
             "annotations": {
                 "kubecouncil.io/cleanup": "delete-namespace",
                 "kubecouncil.io/source": "rehearsal-copy",
+                "kubecouncil.io/expires-at": _expires_at(),
             },
         },
     }
@@ -256,8 +259,13 @@ def _managed_metadata(name: str, namespace: str, run_id: str) -> dict[str, Any]:
         "annotations": {
             "kubecouncil.io/cleanup": "delete-namespace",
             "kubecouncil.io/source": "rehearsal-copy",
+            "kubecouncil.io/expires-at": _expires_at(),
         },
     }
+
+
+def _expires_at() -> str:
+    return (datetime.now(UTC) + timedelta(hours=DEFAULT_REHEARSAL_TTL_HOURS)).isoformat()
 
 
 def _sanitize_deployment(content: dict[str, Any], resource_name: str) -> list[str]:

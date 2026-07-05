@@ -56,12 +56,14 @@ class KubectlK6LoadTestRunner:
         image: str = "grafana/k6:0.49.0",
         target_url: str = "http://gateway",
         wait_buffer_seconds: int = 60,
+        command_timeout_seconds: int = 180,
         command_runner: CommandRunner | None = None,
     ) -> None:
         self._command = tuple(command)
         self._image = image
         self._target_url = target_url
         self._wait_buffer_seconds = wait_buffer_seconds
+        self._command_timeout_seconds = command_timeout_seconds
         self._command_runner = command_runner or self._subprocess_run
 
     def run(self, namespace: str, scenario: ScenarioSpec, phase: str) -> LoadTestResult:
@@ -165,7 +167,7 @@ class KubectlK6LoadTestRunner:
                 },
             },
         ]
-        return yaml.safe_dump_all(documents, sort_keys=False)
+        return cast(str, yaml.safe_dump_all(documents, sort_keys=False))
 
     def _run(self, arguments: Sequence[str], input_text: str | None = None) -> str:
         result = self._command_runner((*self._command, *arguments), input_text)
@@ -194,13 +196,21 @@ class KubectlK6LoadTestRunner:
     def _subprocess_run(
         self, arguments: Sequence[str], input_text: str | None = None
     ) -> CommandResult:
-        result = subprocess.run(
-            list(arguments),
-            check=False,
-            capture_output=True,
-            text=True,
-            input=input_text,
-        )
+        try:
+            result = subprocess.run(
+                list(arguments),
+                check=False,
+                capture_output=True,
+                text=True,
+                input=input_text,
+                timeout=self._command_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return CommandResult(
+                returncode=124,
+                stdout="",
+                stderr=f"kubectl command timed out after {self._command_timeout_seconds}s",
+            )
         return CommandResult(
             returncode=result.returncode,
             stdout=result.stdout,

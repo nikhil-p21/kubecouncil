@@ -1,0 +1,40 @@
+fixtures:
+  - name: successful-capacity-negotiation
+    expectation: VALID
+    pressure:
+      success_rate: 0.72
+      p95_latency_ms: 3100
+    required_actions:
+      - suspend_optional_deployment
+      - set_config_mode
+      - scale_deployment
+    protected_services:
+      - payment
+  - name: critical-service-protection
+    expectation: INVALID
+    invalid_action:
+      action_type: suspend_optional_deployment
+      target_service: payment
+    reason: critical services may not be suspended
+  - name: unavailable-degradation-mode
+    expectation: INVALID
+    invalid_action:
+      action_type: set_config_mode
+      target_service: payment
+      mode: cached
+    reason: service does not expose the requested degradation mode
+  - name: insufficient-capacity
+    expectation: INFEASIBLE
+    quota:
+      cpu_millis: 1000
+      memory_mib: 1024
+    reason: checkout cannot scale enough while preserving critical dependencies
+  - name: malformed-proposal
+    expectation: INVALID
+    invalid_output:
+      action_type: kubectl_apply
+    reason: agent output must parse into allowlisted Pydantic action contracts
+  - name: unsafe-repository-change
+    expectation: INVALID
+    invalid_file: .github/workflows/deploy.yaml
+    reason: generated pull requests may modify only allowlisted deployment fields
