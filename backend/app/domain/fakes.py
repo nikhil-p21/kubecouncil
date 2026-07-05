@@ -15,8 +15,11 @@ from app.domain.interfaces import (
 from app.domain.models import (
     CouncilAction,
     CouncilPlan,
+    CouncilWorkloadSnapshot,
     DeploymentSource,
+    ExperimentAudit,
     ExperimentReport,
+    HpaBounds,
     LoadTestResult,
     PullRequestResult,
     RehearsalPlan,
@@ -26,6 +29,7 @@ from app.domain.models import (
     ResourceRequests,
     ScenarioSpec,
     ServiceProfile,
+    ServiceRuntimeState,
     ValidationResult,
     ValidationStatus,
 )
@@ -74,7 +78,10 @@ class FakeKubernetesClient(KubernetesClient):
         self.created: dict[str, RehearsalPlan] = {}
         self.deleted: list[str] = []
         self.validated: list[str] = []
+        self.applied_actions: list[CouncilAction] = []
+        self.rollback_snapshots: list[CouncilWorkloadSnapshot] = []
         self.fail_validation = False
+        self.fail_action_number: int | None = None
 
     def create_rehearsal(self, plan: RehearsalPlan) -> tuple[RehearsalResource, ...]:
         self.created[plan.namespace] = plan
@@ -100,6 +107,39 @@ class FakeKubernetesClient(KubernetesClient):
     def delete_rehearsal(self, namespace: str) -> None:
         self.deleted.append(namespace)
         self.created.pop(namespace, None)
+
+    def snapshot_workloads(
+        self,
+        namespace: str,
+        services: Sequence[ServiceProfile],
+    ) -> CouncilWorkloadSnapshot:
+        return CouncilWorkloadSnapshot(
+            namespace=namespace,
+            services=tuple(
+                ServiceRuntimeState(
+                    service_name=service.name,
+                    replicas=service.current_replicas,
+                    hpa=service.hpa
+                    or HpaBounds(
+                        min_replicas=service.min_replicas,
+                        max_replicas=service.max_replicas,
+                    ),
+                    resource_requests=service.resource_requests,
+                )
+                for service in services
+            ),
+        )
+
+    def apply_council_action(self, action: CouncilAction) -> None:
+        self.applied_actions.append(action)
+        if (
+            self.fail_action_number is not None
+            and len(self.applied_actions) == self.fail_action_number
+        ):
+            raise RuntimeError("fake action failure")
+
+    def rollback_workloads(self, snapshot: CouncilWorkloadSnapshot) -> None:
+        self.rollback_snapshots.append(snapshot)
 
 
 class InMemoryRunStore(RunStore):
@@ -144,6 +184,23 @@ class FakeCouncilRunner(CouncilRunner):
             actions=self.actions,
             validation=ValidationResult(status=ValidationStatus.PASSED),
         )
+
+
+class FakeExperimentAuditor:
+    def __init__(
+        self,
+        audit: ExperimentAudit | None = None,
+    ) -> None:
+        self.audit_result = audit or ExperimentAudit(
+            summary="fake audit",
+            severe_regressions=(),
+            recommendation="approve",
+        )
+        self.payloads: list[Mapping[str, object]] = []
+
+    def audit(self, payload: Mapping[str, object]) -> ExperimentAudit:
+        self.payloads.append(payload)
+        return self.audit_result
 
 
 class FakePullRequestProvider(PullRequestProvider):

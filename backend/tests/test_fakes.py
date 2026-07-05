@@ -50,6 +50,9 @@ def test_interface_fakes_smoke() -> None:
     kubernetes = FakeKubernetesClient()
     kubernetes.create_rehearsal(plan)
     assert "kc-rehearsal-run-1" in kubernetes.created
+    snapshot_state = kubernetes.snapshot_workloads("kc-rehearsal-run-1", ())
+    kubernetes.rollback_workloads(snapshot_state)
+    assert kubernetes.rollback_snapshots == [snapshot_state]
     kubernetes.delete_rehearsal("kc-rehearsal-run-1")
     assert kubernetes.created == {}
 

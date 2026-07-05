@@ -9,6 +9,7 @@ from app.domain.models import (
     CompatibilitySeverity,
     CouncilAction,
     CouncilPlan,
+    CouncilWorkloadSnapshot,
     DependencyEdge,
     DeploymentSource,
     ExperimentAudit,
@@ -31,6 +32,7 @@ from app.domain.models import (
     ScenarioSpec,
     ServiceProfile,
     ServiceProposal,
+    ServiceRuntimeState,
     ValidationResult,
     ValidationStatus,
 )
@@ -209,6 +211,23 @@ def action() -> CouncilAction:
         ExperimentAudit(
             summary="post-change metrics improved",
             recommendation="approve",
+        ),
+        ServiceRuntimeState(
+            service_name="checkout",
+            replicas=3,
+            hpa=HpaBounds(min_replicas=2, max_replicas=6),
+            resource_requests=ResourceRequests(cpu_millis=450, memory_mib=512),
+            config_values={"checkout-config.MODE": "live"},
+        ),
+        CouncilWorkloadSnapshot(
+            namespace="kc-rehearsal-run-1",
+            services=(
+                ServiceRuntimeState(
+                    service_name="checkout",
+                    replicas=3,
+                    resource_requests=ResourceRequests(cpu_millis=450, memory_mib=512),
+                ),
+            ),
         ),
         PullRequestResult(
             run_id="run-1",

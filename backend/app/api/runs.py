@@ -2,15 +2,27 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.agents.council import AdkGeminiCouncilAgentClient, GeminiAdkCouncilRunner
 from app.api.repositories import get_run_store
-from app.domain.interfaces import KubernetesClient, LoadTestRunner, ManifestRenderer, RunStore
+from app.domain.interfaces import (
+    CouncilRunner,
+    ExperimentAuditor,
+    KubernetesClient,
+    LoadTestRunner,
+    ManifestRenderer,
+    RunStore,
+)
 from app.domain.models import (
     AnalysisResult,
+    CouncilPlan,
+    CouncilWorkloadSnapshot,
     DependencyEdge,
+    ExperimentReport,
     LoadTestResult,
     RehearsalState,
     RehearsalStatus,
     RepositorySnapshot,
+    ResourceRequests,
     ScenarioResults,
     ValidationResult,
     ValidationStatus,
@@ -21,6 +33,7 @@ from app.kubernetes.kustomize import (
     ManifestParseError,
     ManifestRenderError,
 )
+from app.rehearsal.executor import CouncilPlanExecutionError, CouncilPlanExecutor
 from app.rehearsal.planner import RehearsalPlanner, RehearsalPlanningError
 from app.scenarios.k6 import (
     FLASH_SALE_SCENARIO,
@@ -35,6 +48,8 @@ _manifest_renderer = KustomizeManifestRenderer()
 _rehearsal_planner = RehearsalPlanner()
 _kubernetes_client = KubectlKubernetesClient()
 _load_test_runner = KubectlK6LoadTestRunner()
+_council_runner = GeminiAdkCouncilRunner()
+_experiment_auditor = AdkGeminiCouncilAgentClient()
 
 
 def get_manifest_renderer() -> ManifestRenderer:
@@ -51,6 +66,14 @@ def get_kubernetes_client() -> KubernetesClient:
 
 def get_load_test_runner() -> LoadTestRunner:
     return _load_test_runner
+
+
+def get_council_runner() -> CouncilRunner:
+    return _council_runner
+
+
+def get_experiment_auditor() -> ExperimentAuditor:
+    return _experiment_auditor
 
 
 def error_detail(code: str, message: str) -> dict[str, str]:
@@ -278,6 +301,119 @@ def get_results(
     return ScenarioResults(run_id=run_id, scenario=FLASH_SALE_SCENARIO)
 
 
+@router.post(
+    "/{run_id}/council",
+    response_model=CouncilPlan,
+    status_code=status.HTTP_200_OK,
+)
+def run_council(
+    run_id: str,
+    runner: Annotated[CouncilRunner, Depends(get_council_runner)],
+    store: Annotated[RunStore, Depends(get_run_store)],
+) -> CouncilPlan:
+    rehearsal = _deployed_rehearsal(run_id, store)
+    pressure = _stored_load_result(run_id, "pressure_result", store)
+    plan = runner.run(
+        rehearsal.namespace,
+        rehearsal.plan.services,
+        FLASH_SALE_SCENARIO,
+        pressure,
+        run_id=run_id,
+        resource_quota=ResourceRequests(
+            cpu_millis=rehearsal.plan.resource_quota_cpu_millis,
+            memory_mib=rehearsal.plan.resource_quota_memory_mib,
+        ),
+    )
+    store.put(run_id, "council_plan", plan)
+    store.put(run_id, f"council_plan:{plan.plan_id}", plan)
+    return plan
+
+
+@router.post(
+    "/{run_id}/plans/{plan_id}/apply",
+    response_model=ExperimentReport,
+    status_code=status.HTTP_200_OK,
+)
+def apply_plan(
+    run_id: str,
+    plan_id: str,
+    kubernetes: Annotated[KubernetesClient, Depends(get_kubernetes_client)],
+    load_tests: Annotated[LoadTestRunner, Depends(get_load_test_runner)],
+    auditor: Annotated[ExperimentAuditor, Depends(get_experiment_auditor)],
+    store: Annotated[RunStore, Depends(get_run_store)],
+) -> ExperimentReport:
+    rehearsal = _deployed_rehearsal(run_id, store)
+    plan = _stored_plan(run_id, plan_id, store)
+    baseline = _stored_load_result(run_id, "baseline_result", store)
+    pressure = _stored_load_result(run_id, "pressure_result", store)
+    executor = CouncilPlanExecutor(kubernetes, load_tests, auditor)
+    try:
+        report, snapshot = executor.apply_and_verify(
+            rehearsal,
+            plan,
+            FLASH_SALE_SCENARIO,
+            baseline,
+            pressure,
+        )
+    except CouncilPlanExecutionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=error_detail("council_plan_not_executable", str(exc)),
+        ) from exc
+
+    _persist_experiment(run_id, report, snapshot, store)
+    return report
+
+
+@router.post(
+    "/{run_id}/verify",
+    response_model=ExperimentReport,
+    status_code=status.HTTP_200_OK,
+)
+def verify_run(
+    run_id: str,
+    store: Annotated[RunStore, Depends(get_run_store)],
+) -> ExperimentReport:
+    stored_report = store.get(run_id, "experiment_report")
+    if not isinstance(stored_report, ExperimentReport):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=error_detail("experiment_not_applied", "no applied plan is available to verify"),
+        )
+    return stored_report
+
+
+@router.post(
+    "/{run_id}/rollback",
+    response_model=ValidationResult,
+    status_code=status.HTTP_200_OK,
+)
+def rollback_run(
+    run_id: str,
+    kubernetes: Annotated[KubernetesClient, Depends(get_kubernetes_client)],
+    store: Annotated[RunStore, Depends(get_run_store)],
+) -> ValidationResult:
+    snapshot = store.get(run_id, "council_workload_snapshot")
+    if not isinstance(snapshot, CouncilWorkloadSnapshot):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=error_detail("rollback_snapshot_not_found", "no council snapshot is available"),
+        )
+    try:
+        validation = CouncilPlanExecutor(
+            kubernetes,
+            _load_test_runner,
+            _experiment_auditor,
+        ).rollback(snapshot)
+    except KubernetesOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=error_detail("rollback_failed", str(exc)),
+        ) from exc
+    store.put(run_id, "rollback_result", validation)
+    return validation
+
+
 def _run_scenario_phase(
     run_id: str,
     phase: str,
@@ -327,3 +463,56 @@ def _run_scenario_phase(
     store.put(run_id, "scenario", FLASH_SALE_SCENARIO)
     store.put(run_id, "scenario_results", results)
     return result
+
+
+def _deployed_rehearsal(run_id: str, store: RunStore) -> RehearsalState:
+    stored_state = store.get(run_id, "rehearsal_state")
+    if (
+        not isinstance(stored_state, RehearsalState)
+        or stored_state.status != RehearsalStatus.DEPLOYED
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=error_detail("rehearsal_not_deployed", "run does not have a deployed rehearsal"),
+        )
+    return stored_state
+
+
+def _stored_load_result(run_id: str, key: str, store: RunStore) -> LoadTestResult:
+    result = store.get(run_id, key)
+    if not isinstance(result, LoadTestResult):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=error_detail("load_test_result_not_found", f"{key} is not available"),
+        )
+    return result
+
+
+def _stored_plan(run_id: str, plan_id: str, store: RunStore) -> CouncilPlan:
+    stored_plan = store.get(run_id, f"council_plan:{plan_id}")
+    if isinstance(stored_plan, CouncilPlan):
+        return stored_plan
+    fallback = store.get(run_id, "council_plan")
+    if isinstance(fallback, CouncilPlan) and fallback.plan_id == plan_id:
+        return fallback
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=error_detail("council_plan_not_found", "council plan was not found"),
+    )
+
+
+def _persist_experiment(
+    run_id: str,
+    report: ExperimentReport,
+    snapshot: CouncilWorkloadSnapshot,
+    store: RunStore,
+) -> None:
+    store.put(run_id, "council_workload_snapshot", snapshot)
+    store.put(run_id, "experiment_report", report)
+    existing = store.get(run_id, "scenario_results")
+    if isinstance(existing, ScenarioResults):
+        store.put(
+            run_id,
+            "scenario_results",
+            existing.model_copy(update={"post_change": report.pressure_after}),
+        )

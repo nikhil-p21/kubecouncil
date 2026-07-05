@@ -262,6 +262,7 @@ class ScenarioResults(KubeCouncilModel):
     scenario: ScenarioSpec
     baseline: LoadTestResult | None = None
     pressure: LoadTestResult | None = None
+    post_change: LoadTestResult | None = None
 
 
 class CouncilAction(KubeCouncilModel):
@@ -348,6 +349,24 @@ class ExperimentAudit(KubeCouncilModel):
     summary: str = Field(min_length=1)
     severe_regressions: tuple[str, ...] = ()
     recommendation: Literal["approve", "reject", "inconclusive"]
+
+
+class ServiceRuntimeState(KubeCouncilModel):
+    service_name: str = Field(min_length=1)
+    replicas: int = Field(ge=0)
+    hpa: HpaBounds | None = None
+    resource_requests: ResourceRequests
+    config_values: dict[str, str] = Field(default_factory=dict)
+
+
+class CouncilWorkloadSnapshot(KubeCouncilModel):
+    namespace: str
+    services: tuple[ServiceRuntimeState, ...]
+
+    @field_validator("namespace")
+    @classmethod
+    def namespace_is_rehearsal_only(cls, value: str) -> str:
+        return _validate_rehearsal_namespace(value)
 
 
 class PullRequestResult(KubeCouncilModel):

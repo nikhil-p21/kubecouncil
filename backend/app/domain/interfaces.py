@@ -3,8 +3,11 @@ from pathlib import Path
 from typing import Protocol
 
 from app.domain.models import (
+    CouncilAction,
     CouncilPlan,
+    CouncilWorkloadSnapshot,
     DeploymentSource,
+    ExperimentAudit,
     ExperimentReport,
     LoadTestResult,
     PullRequestResult,
@@ -51,6 +54,19 @@ class KubernetesClient(Protocol):
     def delete_rehearsal(self, namespace: str) -> None:
         ...
 
+    def snapshot_workloads(
+        self,
+        namespace: str,
+        services: Sequence[ServiceProfile],
+    ) -> CouncilWorkloadSnapshot:
+        ...
+
+    def apply_council_action(self, action: CouncilAction) -> None:
+        ...
+
+    def rollback_workloads(self, snapshot: CouncilWorkloadSnapshot) -> None:
+        ...
+
 
 class RunStore(Protocol):
     """Stores run-scoped state for workflow recovery and API reads."""
@@ -82,6 +98,13 @@ class CouncilRunner(Protocol):
         run_id: str = "unknown-run",
         resource_quota: ResourceRequests | None = None,
     ) -> CouncilPlan:
+        ...
+
+
+class ExperimentAuditor(Protocol):
+    """Audits before/after experiment evidence without mutating systems."""
+
+    def audit(self, payload: Mapping[str, object]) -> ExperimentAudit:
         ...
 
 
