@@ -11,6 +11,7 @@ from app.domain.models import (
     CouncilPlan,
     DependencyEdge,
     DeploymentSource,
+    ExperimentAudit,
     ExperimentReport,
     ExperimentStatus,
     HpaBounds,
@@ -204,6 +205,10 @@ def action() -> CouncilAction:
             validation=ValidationResult(status=ValidationStatus.PASSED),
             applied_actions=(action(),),
             rollback_guidance="restore recorded deployment settings",
+        ),
+        ExperimentAudit(
+            summary="post-change metrics improved",
+            recommendation="approve",
         ),
         PullRequestResult(
             run_id="run-1",

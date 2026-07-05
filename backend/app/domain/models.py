@@ -52,6 +52,12 @@ class ExperimentStatus(StrEnum):
     INCONCLUSIVE = "inconclusive"
 
 
+class CouncilPlanStatus(StrEnum):
+    VALID = "valid"
+    INVALID = "invalid"
+    INFEASIBLE = "infeasible"
+
+
 CouncilActionType = Literal[
     "scale_deployment",
     "set_hpa_bounds",
@@ -271,6 +277,38 @@ class CouncilAction(KubeCouncilModel):
         return _validate_rehearsal_namespace(value)
 
 
+class ScaleDeploymentParameters(KubeCouncilModel):
+    replicas: int = Field(ge=0)
+
+
+class SetHpaBoundsParameters(KubeCouncilModel):
+    min_replicas: int = Field(ge=0)
+    max_replicas: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def max_covers_min(self) -> "SetHpaBoundsParameters":
+        if self.max_replicas < self.min_replicas:
+            raise ValueError("max_replicas must be greater than or equal to min_replicas")
+        return self
+
+
+class SetResourceRequestsParameters(KubeCouncilModel):
+    cpu_millis: int = Field(ge=0)
+    memory_mib: int = Field(ge=0)
+
+
+class SetConfigModeParameters(KubeCouncilModel):
+    mode: str = Field(min_length=1)
+
+
+class SuspendOptionalDeploymentParameters(KubeCouncilModel):
+    pass
+
+
+class RestoreDeploymentParameters(KubeCouncilModel):
+    pass
+
+
 class ServiceProposal(KubeCouncilModel):
     service_name: str = Field(min_length=1)
     proposed_actions: tuple[CouncilAction, ...]
@@ -283,6 +321,9 @@ class CouncilPlan(KubeCouncilModel):
     namespace: str
     actions: tuple[CouncilAction, ...]
     validation: ValidationResult
+    status: CouncilPlanStatus = CouncilPlanStatus.VALID
+    representative_proposals: tuple[ServiceProposal, ...] = ()
+    repair_attempted: bool = False
     infeasible_reason: str | None = None
 
     @field_validator("namespace")
@@ -301,6 +342,12 @@ class ExperimentReport(KubeCouncilModel):
     validation: ValidationResult
     applied_actions: tuple[CouncilAction, ...]
     rollback_guidance: str = Field(min_length=1)
+
+
+class ExperimentAudit(KubeCouncilModel):
+    summary: str = Field(min_length=1)
+    severe_regressions: tuple[str, ...] = ()
+    recommendation: Literal["approve", "reject", "inconclusive"]
 
 
 class PullRequestResult(KubeCouncilModel):

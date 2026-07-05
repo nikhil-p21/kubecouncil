@@ -12,6 +12,7 @@ from app.domain.models import (
     RehearsalResource,
     RepositoryConnection,
     RepositorySnapshot,
+    ResourceRequests,
     ScenarioSpec,
     ServiceProfile,
     ValidationResult,
@@ -77,6 +78,9 @@ class CouncilRunner(Protocol):
         services: Sequence[ServiceProfile],
         scenario: ScenarioSpec,
         pressure_result: LoadTestResult,
+        *,
+        run_id: str = "unknown-run",
+        resource_quota: ResourceRequests | None = None,
     ) -> CouncilPlan:
         ...
 

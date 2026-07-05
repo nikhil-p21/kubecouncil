@@ -23,6 +23,7 @@ from app.domain.models import (
     RehearsalResource,
     RepositoryConnection,
     RepositorySnapshot,
+    ResourceRequests,
     ScenarioSpec,
     ServiceProfile,
     ValidationResult,
@@ -132,10 +133,13 @@ class FakeCouncilRunner(CouncilRunner):
         services: Sequence[ServiceProfile],
         scenario: ScenarioSpec,
         pressure_result: LoadTestResult,
+        *,
+        run_id: str = "fake-run",
+        resource_quota: ResourceRequests | None = None,
     ) -> CouncilPlan:
         return CouncilPlan(
             plan_id="fake-plan",
-            run_id="fake-run",
+            run_id=run_id,
             namespace=namespace,
             actions=self.actions,
             validation=ValidationResult(status=ValidationStatus.PASSED),
