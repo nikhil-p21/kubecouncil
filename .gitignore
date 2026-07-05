@@ -15,3 +15,4 @@ coverage/
 !.env.example
 .scratch/issues/
 .env.local
+.venv
