@@ -127,7 +127,7 @@ metadata:
     kubecouncil.io/degradation-modes: cached
     kubecouncil.io/optional: "false"
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: recommendation
