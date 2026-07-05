@@ -24,6 +24,8 @@ from app.domain.models import (
     RehearsalResource,
     RehearsalState,
     RehearsalStatus,
+    RepositoryChange,
+    RepositoryChangeSet,
     RepositoryConnection,
     RepositorySnapshot,
     ResourceRequests,
@@ -236,6 +238,17 @@ def action() -> CouncilAction:
             pr_url="https://github.com/example/repo/pull/1",
             draft=True,
             changed_files=("deploy/overlays/production/patch.yaml",),
+        ),
+        RepositoryChangeSet(
+            run_id="run-1",
+            branch_name="kubecouncil/rehearsal-run-1",
+            changes=(
+                RepositoryChange(
+                    path="deploy/overlays/production/kustomization.yaml",
+                    rationale="generated from validated rehearsal action",
+                ),
+            ),
+            validation=ValidationResult(status=ValidationStatus.PASSED),
         ),
     ],
 )

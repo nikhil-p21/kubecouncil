@@ -10,6 +10,7 @@ from app.domain.interfaces import (
     KubernetesClient,
     LoadTestRunner,
     ManifestRenderer,
+    PullRequestProvider,
     RunStore,
 )
 from app.domain.models import (
@@ -18,7 +19,9 @@ from app.domain.models import (
     CouncilWorkloadSnapshot,
     DependencyEdge,
     ExperimentReport,
+    ExperimentStatus,
     LoadTestResult,
+    PullRequestResult,
     RehearsalState,
     RehearsalStatus,
     RepositorySnapshot,
@@ -32,6 +35,16 @@ from app.kubernetes.kustomize import (
     KustomizeManifestRenderer,
     ManifestParseError,
     ManifestRenderError,
+)
+from app.pull_requests.github import (
+    GitPullRequestProvider,
+    PullRequestBranchExistsError,
+    PullRequestProviderError,
+)
+from app.pull_requests.planner import (
+    RepositoryChangePlanner,
+    RepositoryChangePlanningError,
+    changed_file_contents,
 )
 from app.rehearsal.executor import CouncilPlanExecutionError, CouncilPlanExecutor
 from app.rehearsal.planner import RehearsalPlanner, RehearsalPlanningError
@@ -50,6 +63,8 @@ _kubernetes_client = KubectlKubernetesClient()
 _load_test_runner = KubectlK6LoadTestRunner()
 _council_runner = GeminiAdkCouncilRunner()
 _experiment_auditor = AdkGeminiCouncilAgentClient()
+_repository_change_planner = RepositoryChangePlanner()
+_pull_request_provider = GitPullRequestProvider()
 
 
 def get_manifest_renderer() -> ManifestRenderer:
@@ -74,6 +89,14 @@ def get_council_runner() -> CouncilRunner:
 
 def get_experiment_auditor() -> ExperimentAuditor:
     return _experiment_auditor
+
+
+def get_repository_change_planner() -> RepositoryChangePlanner:
+    return _repository_change_planner
+
+
+def get_pull_request_provider() -> PullRequestProvider:
+    return _pull_request_provider
 
 
 def error_detail(code: str, message: str) -> dict[str, str]:
@@ -412,6 +435,69 @@ def rollback_run(
         ) from exc
     store.put(run_id, "rollback_result", validation)
     return validation
+
+
+@router.post(
+    "/{run_id}/pull-request",
+    response_model=PullRequestResult,
+    status_code=status.HTTP_200_OK,
+)
+def create_pull_request(
+    run_id: str,
+    planner: Annotated[RepositoryChangePlanner, Depends(get_repository_change_planner)],
+    renderer: Annotated[ManifestRenderer, Depends(get_manifest_renderer)],
+    provider: Annotated[PullRequestProvider, Depends(get_pull_request_provider)],
+    store: Annotated[RunStore, Depends(get_run_store)],
+) -> PullRequestResult:
+    existing = store.get(run_id, "pull_request_result")
+    if isinstance(existing, PullRequestResult):
+        return existing
+
+    snapshot = store.get(run_id, "repository_snapshot")
+    if not isinstance(snapshot, RepositorySnapshot):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=error_detail("repository_snapshot_not_found", "repository is not connected"),
+        )
+    rehearsal = _deployed_rehearsal(run_id, store)
+    report = store.get(run_id, "experiment_report")
+    if not isinstance(report, ExperimentReport):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=error_detail("experiment_not_verified", "no experiment report is available"),
+        )
+    if report.status != ExperimentStatus.SUCCESSFUL:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=error_detail(
+                "experiment_not_successful",
+                "failed or inconclusive rehearsals cannot create pull requests",
+            ),
+        )
+
+    try:
+        change_set = planner.plan(snapshot, report, rehearsal.plan.services, renderer)
+        changed_files = changed_file_contents(snapshot, change_set)
+        result = provider.open_draft_pull_request(snapshot, report, changed_files)
+    except RepositoryChangePlanningError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=error_detail("repository_change_planning_failed", str(exc)),
+        ) from exc
+    except PullRequestBranchExistsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=error_detail("pull_request_branch_exists", str(exc)),
+        ) from exc
+    except PullRequestProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=error_detail("pull_request_creation_failed", str(exc)),
+        ) from exc
+
+    store.put(run_id, "repository_change_set", change_set)
+    store.put(run_id, "pull_request_result", result)
+    return result
 
 
 def _run_scenario_phase(

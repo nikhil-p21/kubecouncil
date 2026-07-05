@@ -1,1 +1,1 @@
-"""Pull request provider implementations."""
+"""Pull request planning and provider implementations."""

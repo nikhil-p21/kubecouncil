@@ -383,3 +383,19 @@ class PullRequestResult(KubeCouncilModel):
         if not value:
             raise ValueError("pull requests must be opened as drafts")
         return value
+
+
+class RepositoryChange(KubeCouncilModel):
+    """A source-controlled file update generated from a successful rehearsal."""
+
+    path: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+
+
+class RepositoryChangeSet(KubeCouncilModel):
+    """Validated repository changes that may be committed to a draft PR branch."""
+
+    run_id: str = Field(min_length=1)
+    branch_name: str = Field(min_length=1)
+    changes: tuple[RepositoryChange, ...]
+    validation: ValidationResult

@@ -165,7 +165,7 @@ class KubectlK6LoadTestRunner:
                 },
             },
         ]
-        return cast(str, yaml.safe_dump_all(documents, sort_keys=False))
+        return yaml.safe_dump_all(documents, sort_keys=False)
 
     def _run(self, arguments: Sequence[str], input_text: str | None = None) -> str:
         result = self._command_runner((*self._command, *arguments), input_text)
