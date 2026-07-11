@@ -175,6 +175,14 @@ class EvidenceMapping(KubeCouncilModel):
         return self
 
 
+class ObservabilityLink(KubeCouncilModel):
+    """A safe deep link to a provider-owned observability view."""
+
+    label: str = Field(min_length=1, max_length=100)
+    source: EvidenceSource
+    url: str = Field(min_length=1, max_length=2000, pattern=r"^https://")
+
+
 class RecoveryCriteria(KubeCouncilModel):
     critical_journey_name: str = Field(min_length=1)
     required_stable_windows: int = Field(ge=2)
@@ -198,6 +206,7 @@ class ApplicationProfile(KubeCouncilModel):
     workloads: tuple[ManagedWorkload, ...] = Field(min_length=1)
     critical_journeys: tuple[CriticalJourney, ...] = Field(min_length=1)
     evidence_mappings: tuple[EvidenceMapping, ...] = Field(min_length=1)
+    observability_links: tuple[ObservabilityLink, ...] = ()
     evidence_budget: EvidenceBudget
     recovery_criteria: RecoveryCriteria
 
@@ -239,11 +248,18 @@ class ApplicationProfile(KubeCouncilModel):
         }
         if len(mapping_keys) != len(self.evidence_mappings):
             raise ValueError("application profile evidence mappings must be unique")
+        if len({mapping.identifier for mapping in self.evidence_mappings}) != len(
+            self.evidence_mappings
+        ):
+            raise ValueError("application profile evidence mapping identifiers must be unique")
         if any(
             mapping.scope not in {workload.reference for workload in self.workloads}
             for mapping in self.evidence_mappings
         ):
             raise ValueError("evidence mappings must target a declared workload")
+        link_keys = {(link.source, link.url) for link in self.observability_links}
+        if len(link_keys) != len(self.observability_links):
+            raise ValueError("application profile observability links must be unique")
         return self
 
 
@@ -541,6 +557,7 @@ class EvidenceObservation(KubeCouncilModel):
     source: EvidenceSource
     query: EvidenceQueryKind
     query_reference: str = Field(min_length=1)
+    evidence_query_id: str | None = Field(default=None, min_length=1)
     evidence_window_id: str = Field(min_length=1)
     observed_at: datetime
     scope: WorkloadReference
@@ -600,6 +617,32 @@ class EvidenceQuery(KubeCouncilModel):
     target: WorkloadReference
     requested_at: datetime
     query_round: int = Field(ge=1, le=2)
+
+
+class EvidenceProviderRequest(KubeCouncilModel):
+    """Fully resolved server-side request passed to one read-only provider adapter."""
+
+    query_id: str = Field(min_length=1)
+    incident_id: str = Field(min_length=1)
+    source: EvidenceSource
+    kind: EvidenceQueryKind
+    scope: WorkloadReference
+    mapping_identifier: str = Field(min_length=1, max_length=500)
+    query_template: str | None = Field(default=None, min_length=1, max_length=2000)
+    started_at: datetime
+    ended_at: datetime
+    maximum_items: int = Field(ge=1, le=500)
+    deadline_seconds: float = Field(gt=0, le=30)
+
+    @model_validator(mode="after")
+    def is_bounded_and_provider_owned(self) -> "EvidenceProviderRequest":
+        if self.ended_at <= self.started_at:
+            raise ValueError("provider evidence request end must be after start")
+        if self.ended_at - self.started_at > timedelta(hours=2):
+            raise ValueError("provider evidence request cannot exceed two hours")
+        if self.kind == EvidenceQueryKind.METRICS and self.query_template is None:
+            raise ValueError("metric provider requests require a profile-owned query template")
+        return self
 
 
 class EvidenceCitation(KubeCouncilModel):
@@ -804,6 +847,14 @@ class InvestigationRecord(KubeCouncilModel):
         if any(entry_id != incident_id for entry_id in entry_incident_ids):
             raise ValueError("investigation record entries must belong to the same incident")
         evidence_ids = {item.evidence_id for item in self.evidence}
+        evidence_query_ids = {item.query_id for item in self.evidence_queries}
+        if any(
+            item.evidence_query_id is not None and item.evidence_query_id not in evidence_query_ids
+            for item in self.evidence
+        ):
+            raise ValueError(
+                "follow-up evidence must reference a query in the investigation record"
+            )
         citations = [citation.evidence_id for item in self.findings for citation in item.citations]
         citations.extend(
             citation.evidence_id for item in self.hypotheses for citation in item.citations
@@ -867,6 +918,10 @@ class IncidentStore(Protocol):
         self, incident_id: str, failure: EvidenceRetrievalFailure
     ) -> InvestigationRecord: ...
 
+    def append_evidence_query(
+        self, incident_id: str, query: EvidenceQuery
+    ) -> InvestigationRecord: ...
+
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord: ...
 
     def timeline(self, incident_id: str, *, after: int = 0) -> tuple[AuditEvent, ...]: ...
@@ -900,6 +955,12 @@ class EvidenceProvider(Protocol):
         signal: AlertSignal,
         window: EvidenceWindow,
     ) -> tuple[RawEvidenceObservation, ...]: ...
+
+
+class EvidenceQueryAdapter(Protocol):
+    """Executes one server-resolved, bounded, read-only provider request."""
+
+    def query(self, request: EvidenceProviderRequest) -> RawEvidenceObservation: ...
 
 
 class EvidenceRedactor(Protocol):

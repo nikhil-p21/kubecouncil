@@ -48,6 +48,10 @@ describe("App", () => {
     expect(screenText()).toContain("fake://logging/recommendationservice");
     expect(screenText()).toContain("Evidence retrieval failures");
     expect(screenText()).toContain("redaction failed; evidence was not retained");
+    expect(screenText()).toContain("Cloud observability");
+    expect(linkByName("Online Boutique logs").href).toBe(
+      "https://console.cloud.google.com/logs/query",
+    );
   });
 
   it("shows Enrollment readiness and keeps a protected dependency observe-only", async () => {
@@ -150,6 +154,16 @@ function buttonByName(name: string): HTMLButtonElement {
   return button;
 }
 
+function linkByName(name: string): HTMLAnchorElement {
+  const link = Array.from(document.querySelectorAll("a")).find(
+    (candidate) => candidate.textContent?.trim() === name,
+  );
+  if (!(link instanceof HTMLAnchorElement)) {
+    throw new Error(`link not found: ${name}`);
+  }
+  return link;
+}
+
 function screenText(): string {
   return document.body.textContent ?? "";
 }
@@ -182,6 +196,13 @@ function incidentRecord() {
       version: "v1",
       namespace: "online-boutique",
       workloads: [],
+      observability_links: [
+        {
+          label: "Online Boutique logs",
+          source: "cloud_logging",
+          url: "https://console.cloud.google.com/logs/query",
+        },
+      ],
       critical_journeys: [],
       evidence_budget: {},
       recovery_criteria: {},

@@ -20,12 +20,14 @@ from app.domain.incidents import (
     EvidenceRedactor,
     IncidentStore,
     InvestigationRecord,
+    SpecialistRole,
     WorkloadReference,
 )
 from app.domain.models import KubeCouncilModel
 from app.services.alerts import AlertNormalizer, AlertNotification
 from app.services.enrollment import EnrollmentChecker, require_enrolled_target
 from app.services.evidence import InitialEvidenceWindowCollector
+from app.services.evidence_gateway import EvidenceGatewayError, EvidenceQueryGateway
 
 router = APIRouter(prefix="/api/incidents", tags=["incidents"])
 
@@ -40,6 +42,14 @@ class OpenIncidentRequest(KubeCouncilModel):
     )
 
 
+class RunEvidenceQueryRequest(KubeCouncilModel):
+    """A specialist may select only a profile-owned mapping, never raw provider scope."""
+
+    specialist: SpecialistRole
+    mapping_identifier: str = Field(min_length=1, max_length=500)
+    query_round: int = Field(ge=1, le=2)
+
+
 def get_incident_store(request: Request) -> IncidentStore:
     store = getattr(request.app.state, "incident_store", None)
     if not all(
@@ -49,6 +59,9 @@ def get_incident_store(request: Request) -> IncidentStore:
             "get",
             "list",
             "append_alert_signal",
+            "append_evidence",
+            "append_evidence_query",
+            "append_evidence_retrieval_failure",
             "append_audit_event",
             "timeline",
         )
@@ -85,6 +98,13 @@ def get_evidence_redactor(request: Request) -> EvidenceRedactor:
     if not callable(getattr(redactor, "redact", None)):
         raise RuntimeError("evidence redactor is unavailable")
     return cast(EvidenceRedactor, redactor)
+
+
+def get_evidence_query_gateway(request: Request) -> EvidenceQueryGateway:
+    gateway = getattr(request.app.state, "evidence_query_gateway", None)
+    if not callable(getattr(gateway, "execute", None)):
+        raise RuntimeError("evidence query gateway is unavailable")
+    return cast(EvidenceQueryGateway, gateway)
 
 
 @router.post("", response_model=InvestigationRecord, status_code=status.HTTP_201_CREATED)
@@ -179,6 +199,33 @@ def list_incidents(
     store: Annotated[IncidentStore, Depends(get_incident_store)],
 ) -> tuple[InvestigationRecord, ...]:
     return store.list()
+
+
+@router.post(
+    "/{incident_id}/evidence-queries",
+    response_model=InvestigationRecord,
+    status_code=status.HTTP_201_CREATED,
+)
+def run_evidence_query(
+    incident_id: str,
+    request: RunEvidenceQueryRequest,
+    store: Annotated[IncidentStore, Depends(get_incident_store)],
+    gateway: Annotated[EvidenceQueryGateway, Depends(get_evidence_query_gateway)],
+) -> InvestigationRecord:
+    try:
+        return gateway.execute(
+            store,
+            incident_id=incident_id,
+            specialist=request.specialist,
+            mapping_identifier=request.mapping_identifier,
+            query_round=request.query_round,
+        )
+    except EvidenceGatewayError as error:
+        missing = str(error) == "incident does not exist"
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND if missing else status.HTTP_409_CONFLICT,
+            detail={"code": "evidence_query_rejected", "message": str(error)},
+        ) from error
 
 
 @router.get("/{incident_id}/timeline", response_model=tuple[AuditEvent, ...])

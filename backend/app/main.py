@@ -13,8 +13,10 @@ from app.domain.incident_fakes import (
     InMemoryIncidentStore,
     fake_application_profile,
 )
+from app.domain.incidents import EvidenceSource
 from app.observability import RequestIdMiddleware, configure_logging
 from app.services.evidence import DeterministicEvidenceRedactor
+from app.services.evidence_gateway import EvidenceQueryGateway, FakeEvidenceQueryAdapter
 
 
 @asynccontextmanager
@@ -25,6 +27,15 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.enrollment_provider = FakeEnrollmentProvider.ready_for(profile)
     application.state.evidence_provider = FakeEvidenceProvider()
     application.state.evidence_redactor = DeterministicEvidenceRedactor()
+    fake_query_adapter = FakeEvidenceQueryAdapter()
+    application.state.evidence_query_gateway = EvidenceQueryGateway(
+        adapters={
+            EvidenceSource.KUBERNETES: fake_query_adapter,
+            EvidenceSource.CLOUD_LOGGING: fake_query_adapter,
+            EvidenceSource.CLOUD_MONITORING: fake_query_adapter,
+        },
+        redactor=application.state.evidence_redactor,
+    )
     yield
 
 

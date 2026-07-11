@@ -21,6 +21,7 @@ type IncidentRecord = {
     display_name: string;
     namespace: string;
     workloads: Array<{ reference: { name: string }; executable: boolean; protected_dependency: boolean }>;
+    observability_links: Array<{ label: string; source: string; url: string }>;
   };
   evidence_window: { started_at: string; ended_at: string; captured_at: string };
   alert_signals: Array<{ notification_id: string; provider_state: "open" | "closed" }>;
@@ -29,6 +30,7 @@ type IncidentRecord = {
     source: string;
     query: string;
     query_reference: string;
+    evidence_query_id?: string | null;
     evidence_window_id: string;
     observed_at: string;
     scope: { namespace: string; name: string };
@@ -312,6 +314,19 @@ function IncidentDetail({ record }: { record: IncidentRecord }) {
             </li>
           ))}
         </ul>
+        <div className="observability-links">
+          <h3>Cloud observability</h3>
+          <p>Open the provider-owned view for deeper investigation.</p>
+          <ul className="plain-list">
+            {profile.observability_links.map((link) => (
+              <li key={`${link.source}-${link.url}`}>
+                <a href={link.url} rel="noreferrer" target="_blank">
+                  {link.label}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
       </article>
 
       <article className="incident-card incident-timeline">
@@ -345,6 +360,7 @@ function IncidentDetail({ record }: { record: IncidentRecord }) {
                 Scope: {evidence.scope.namespace}/{evidence.scope.name} · Observed: {new Date(evidence.observed_at).toLocaleString()}
                 <br />
                 Query: {evidence.query_reference} · Hash: {evidence.content_hash}
+                {evidence.evidence_query_id ? ` · Audit query: ${evidence.evidence_query_id}` : ""}
                 <br />
                 {evidence.provider_reference}
                 {evidence.truncated ? " · truncated to the Evidence Budget" : ""}

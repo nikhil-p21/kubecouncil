@@ -12,6 +12,7 @@ from app.domain.incidents import (
     ApplicationProfile,
     AuditEvent,
     EvidenceObservation,
+    EvidenceQuery,
     EvidenceRetrievalFailure,
     Incident,
     InvestigationRecord,
@@ -181,9 +182,7 @@ class FirestoreIncidentStore:
     def append_evidence(
         self, incident_id: str, evidence: EvidenceObservation
     ) -> InvestigationRecord:
-        return self._mutate(
-            incident_id, lambda store: store.append_evidence(incident_id, evidence)
-        )
+        return self._mutate(incident_id, lambda store: store.append_evidence(incident_id, evidence))
 
     def append_alert_signal(
         self, incident_id: str, signal: AlertSignalEvidence
@@ -200,10 +199,13 @@ class FirestoreIncidentStore:
             lambda store: store.append_evidence_retrieval_failure(incident_id, failure),
         )
 
-    def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord:
+    def append_evidence_query(self, incident_id: str, query: EvidenceQuery) -> InvestigationRecord:
         return self._mutate(
-            incident_id, lambda store: store.append_audit_event(incident_id, event)
+            incident_id, lambda store: store.append_evidence_query(incident_id, query)
         )
+
+    def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord:
+        return self._mutate(incident_id, lambda store: store.append_audit_event(incident_id, event))
 
     def compare_and_set(
         self, incident_id: str, expected_version: int, replacement: Incident

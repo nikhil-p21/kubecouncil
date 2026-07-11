@@ -55,6 +55,25 @@ def test_application_profile_requires_distinct_investigator_and_executor_identit
         )
 
 
+def test_application_profile_requires_unique_mapping_ids_and_https_observability_links() -> None:
+    profile = fake_application_profile()
+    duplicate = profile.evidence_mappings[1].model_copy(
+        update={"identifier": profile.evidence_mappings[0].identifier}
+    )
+    with pytest.raises(ValidationError, match="mapping identifiers"):
+        ApplicationProfile.model_validate(
+            profile.model_dump() | {"evidence_mappings": (profile.evidence_mappings[0], duplicate)}
+        )
+
+    unsafe_link = profile.observability_links[0].model_dump() | {
+        "url": "javascript:alert('unsafe')"
+    }
+    with pytest.raises(ValidationError, match="string_pattern_mismatch"):
+        ApplicationProfile.model_validate(
+            profile.model_dump() | {"observability_links": (unsafe_link,)}
+        )
+
+
 def test_enrollment_readiness_reports_each_failed_prerequisite() -> None:
     profile = fake_application_profile()
     readiness = EnrollmentChecker().check(

@@ -19,6 +19,7 @@ from app.domain.incidents import (
     EvidenceMapping,
     EvidenceObservation,
     EvidenceProvider,
+    EvidenceQuery,
     EvidenceQueryKind,
     EvidenceRetrievalFailure,
     EvidenceSource,
@@ -28,6 +29,7 @@ from app.domain.incidents import (
     InvestigationRecord,
     ManagedWorkload,
     NamespaceEnrollmentState,
+    ObservabilityLink,
     ProfileValidationIssue,
     RawEvidenceObservation,
     RecoveryCriteria,
@@ -112,6 +114,55 @@ def fake_application_profile() -> ApplicationProfile:
                 kind=EvidenceQueryKind.CHANGE_HISTORY,
                 scope=WorkloadReference(namespace="online-boutique", name="recommendationservice"),
                 identifier="recommendationservice-revisions",
+            ),
+            EvidenceMapping(
+                source=EvidenceSource.KUBERNETES,
+                kind=EvidenceQueryKind.WORKLOAD_STATE,
+                scope=WorkloadReference(namespace="online-boutique", name="redis-cart"),
+                identifier="redis-cart-workload-state",
+            ),
+            EvidenceMapping(
+                source=EvidenceSource.KUBERNETES,
+                kind=EvidenceQueryKind.POD_EVENTS,
+                scope=WorkloadReference(namespace="online-boutique", name="redis-cart"),
+                identifier="redis-cart-events",
+            ),
+            EvidenceMapping(
+                source=EvidenceSource.CLOUD_LOGGING,
+                kind=EvidenceQueryKind.POD_LOGS,
+                scope=WorkloadReference(namespace="online-boutique", name="redis-cart"),
+                identifier="redis-cart-logs",
+            ),
+            EvidenceMapping(
+                source=EvidenceSource.CLOUD_MONITORING,
+                kind=EvidenceQueryKind.METRICS,
+                scope=WorkloadReference(namespace="online-boutique", name="redis-cart"),
+                identifier="redis-cart-availability",
+                query_template=(
+                    'kube_deployment_status_replicas_available{namespace="online-boutique",'
+                    'deployment="redis-cart"}'
+                ),
+            ),
+            EvidenceMapping(
+                source=EvidenceSource.KUBERNETES,
+                kind=EvidenceQueryKind.CHANGE_HISTORY,
+                scope=WorkloadReference(namespace="online-boutique", name="redis-cart"),
+                identifier="redis-cart-revisions",
+            ),
+        ),
+        observability_links=(
+            ObservabilityLink(
+                label="Online Boutique logs",
+                source=EvidenceSource.CLOUD_LOGGING,
+                url=(
+                    "https://console.cloud.google.com/logs/query;query="
+                    "resource.type%3D%22k8s_container%22"
+                ),
+            ),
+            ObservabilityLink(
+                label="Online Boutique metrics",
+                source=EvidenceSource.CLOUD_MONITORING,
+                url="https://console.cloud.google.com/monitoring/metrics-explorer",
             ),
         ),
         evidence_budget=EvidenceBudget(
@@ -375,6 +426,10 @@ class InMemoryIncidentStore(IncidentStore):
         }
         if evidence.scope not in enrolled_workloads:
             raise ValueError("evidence scope is outside the enrolled application profile")
+        if evidence.evidence_query_id is not None and evidence.evidence_query_id not in {
+            query.query_id for query in record.evidence_queries
+        }:
+            raise ValueError("follow-up evidence must reference a recorded evidence query")
         if any(item.evidence_id == evidence.evidence_id for item in record.evidence):
             raise ValueError("evidence already exists and is append-only")
         return self._replace(record.model_copy(update={"evidence": (*record.evidence, evidence)}))
@@ -387,9 +442,7 @@ class InMemoryIncidentStore(IncidentStore):
             raise ValueError("alert signal evidence must belong to the requested incident")
         if signal.signal.application_id != record.incident.application_id:
             raise ValueError("alert signal evidence must belong to the enrolled application")
-        if any(
-            item.notification_id == signal.notification_id for item in record.alert_signals
-        ):
+        if any(item.notification_id == signal.notification_id for item in record.alert_signals):
             raise ValueError("alert signal evidence already exists and is append-only")
         return self._replace(
             record.model_copy(update={"alert_signals": (*record.alert_signals, signal)})
@@ -414,6 +467,20 @@ class InMemoryIncidentStore(IncidentStore):
                     )
                 }
             )
+        )
+
+    def append_evidence_query(self, incident_id: str, query: EvidenceQuery) -> InvestigationRecord:
+        record = self._required_record(incident_id)
+        if query.incident_id != incident_id:
+            raise ValueError("evidence query must belong to the requested incident")
+        if query.target not in {
+            workload.reference for workload in record.application_profile.workloads
+        }:
+            raise ValueError("evidence query target is outside the enrolled application profile")
+        if any(item.query_id == query.query_id for item in record.evidence_queries):
+            raise ValueError("evidence query already exists and is append-only")
+        return self._replace(
+            record.model_copy(update={"evidence_queries": (*record.evidence_queries, query)})
         )
 
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord:

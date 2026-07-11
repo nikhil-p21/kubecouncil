@@ -8,7 +8,15 @@ from app.domain.incident_fakes import (
     InMemoryIncidentStore,
     fake_application_profile,
 )
-from app.domain.incidents import AlertSignal, AuditEvent, IncidentLifecycle, transition_incident
+from app.domain.incidents import (
+    AlertSignal,
+    AuditEvent,
+    EvidenceQuery,
+    EvidenceQueryKind,
+    IncidentLifecycle,
+    SpecialistRole,
+    transition_incident,
+)
 from app.services.alerts import (
     AlertIngestionService,
     AlertNotification,
@@ -38,6 +46,19 @@ def test_incident_stores_have_equivalent_append_and_compare_and_set_behavior(sto
 
     appended = typed_store.append_audit_event(record.incident.incident_id, event)  # type: ignore[attr-defined]
     assert appended.audit_events[0].cursor == 1
+    queried = typed_store.append_evidence_query(  # type: ignore[attr-defined]
+        record.incident.incident_id,
+        EvidenceQuery(
+            query_id="query-1",
+            incident_id=record.incident.incident_id,
+            specialist=SpecialistRole.HEALTH,
+            kind=EvidenceQueryKind.WORKLOAD_STATE,
+            target=profile.workloads[0].reference,
+            requested_at=signal.observed_at,
+            query_round=1,
+        ),
+    )
+    assert queried.evidence_queries[0].query_id == "query-1"
     updated = transition_incident(record.incident, lifecycle=IncidentLifecycle.INVESTIGATING)
     compared = typed_store.compare_and_set(  # type: ignore[attr-defined]
         record.incident.incident_id, expected_version=0, replacement=updated

@@ -295,6 +295,30 @@ h2 {
   line-height: 1.45;
 }
 
+.observability-links {
+  margin-top: 24px;
+  border-top: 1px solid #dbe3e5;
+  padding-top: 18px;
+}
+
+.observability-links h3 {
+  margin: 0 0 6px;
+  color: #173943;
+  font-size: 1rem;
+}
+
+.observability-links p {
+  margin-bottom: 0;
+  color: #5e7076;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.observability-links a {
+  color: #135969;
+  font-weight: 700;
+}
+
 .incident-timeline strong {
   color: #164d5b;
 }
