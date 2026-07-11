@@ -385,6 +385,16 @@ class AlertSignal(KubeCouncilModel):
         return self
 
 
+class AlertSignalEvidence(KubeCouncilModel):
+    """Append-only provider state retained as evidence, never as lifecycle authority."""
+
+    notification_id: str = Field(min_length=1)
+    incident_id: str = Field(min_length=1)
+    signal: AlertSignal
+    provider_state: Literal["open", "closed"]
+    received_at: datetime
+
+
 class Incident(KubeCouncilModel):
     incident_id: str = Field(min_length=1)
     application_id: str = Field(min_length=1)
@@ -734,12 +744,14 @@ class AuditEvent(KubeCouncilModel):
     occurred_at: datetime
     actor: str = Field(min_length=1)
     details: dict[str, str] = Field(default_factory=dict)
+    cursor: int = Field(default=0, ge=0)
 
 
 class InvestigationRecord(KubeCouncilModel):
     incident: Incident
     application_profile: ApplicationProfile
     evidence_window: EvidenceWindow
+    alert_signals: tuple[AlertSignalEvidence, ...] = ()
     evidence: tuple[EvidenceObservation, ...] = ()
     evidence_retrieval_failures: tuple[EvidenceRetrievalFailure, ...] = ()
     evidence_queries: tuple[EvidenceQuery, ...] = ()
@@ -773,7 +785,8 @@ class InvestigationRecord(KubeCouncilModel):
                 "investigation record scope is outside the enrolled application profile"
             )
         entry_incident_ids = (
-            [item.incident_id for item in self.evidence]
+            [item.incident_id for item in self.alert_signals]
+            + [item.incident_id for item in self.evidence]
             + [item.incident_id for item in self.evidence_retrieval_failures]
             + [item.incident_id for item in self.evidence_queries]
             + [item.incident_id for item in self.findings]
@@ -846,11 +859,17 @@ class IncidentStore(Protocol):
         self, incident_id: str, evidence: EvidenceObservation
     ) -> InvestigationRecord: ...
 
+    def append_alert_signal(
+        self, incident_id: str, signal: AlertSignalEvidence
+    ) -> InvestigationRecord: ...
+
     def append_evidence_retrieval_failure(
         self, incident_id: str, failure: EvidenceRetrievalFailure
     ) -> InvestigationRecord: ...
 
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord: ...
+
+    def timeline(self, incident_id: str, *, after: int = 0) -> tuple[AuditEvent, ...]: ...
 
     def compare_and_set(
         self,

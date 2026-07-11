@@ -15,6 +15,7 @@ afterEach(() => {
   container?.remove();
   container = null;
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("App", () => {
@@ -88,6 +89,46 @@ describe("App", () => {
     expect(screenText()).toContain("Not ready");
     expect(screenText()).toContain("Field required");
   });
+
+  it("replays timeline events from the last cursor without duplicates", async () => {
+    const eventSources: MockEventSource[] = [];
+    vi.stubGlobal(
+      "EventSource",
+      class extends MockEventSource {
+        constructor(url: string) {
+          super(url);
+          eventSources.push(this);
+        }
+      },
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
+      const path = typeof input === "string" ? input : input.toString();
+      return jsonResponse(path === "/api/incidents" ? incidentRecord() : [managedApplication()]);
+    });
+    renderApp();
+
+    await act(async () => buttonByName("Open fake incident").click());
+    expect(eventSources[0]?.url).toBe("/api/incidents/inc-123/events?after=1");
+
+    await act(async () => {
+      eventSources[0]?.emit({
+        event_id: "audit-2",
+        event_type: "specialist_started",
+        occurred_at: "2026-07-11T00:00:01Z",
+        actor: "investigator",
+        cursor: 2,
+      });
+      eventSources[0]?.emit({
+        event_id: "audit-2",
+        event_type: "specialist_started",
+        occurred_at: "2026-07-11T00:00:01Z",
+        actor: "investigator",
+        cursor: 2,
+      });
+    });
+
+    expect(screenText().match(/specialist_started/g)).toHaveLength(1);
+  });
 });
 
 function renderApp(): void {
@@ -150,6 +191,7 @@ function incidentRecord() {
       ended_at: "2026-07-11T00:00:00Z",
       captured_at: "2026-07-11T00:00:00Z",
     },
+    alert_signals: [],
     evidence: [
       {
         evidence_id: "evidence-1",
@@ -191,10 +233,30 @@ function incidentRecord() {
         event_type: "incident_opened",
         occurred_at: "2026-07-11T00:00:00Z",
         actor: "local-operator",
+        cursor: 1,
         details: {},
       },
     ],
   };
+}
+
+class MockEventSource {
+  readonly url: string;
+  private listener: ((message: MessageEvent<string>) => void) | null = null;
+
+  constructor(url: string) {
+    this.url = url;
+  }
+
+  addEventListener(_type: string, listener: EventListener): void {
+    this.listener = listener as (message: MessageEvent<string>) => void;
+  }
+
+  close(): void {}
+
+  emit(payload: object): void {
+    this.listener?.({ data: JSON.stringify(payload) } as MessageEvent<string>);
+  }
 }
 
 function managedApplication() {

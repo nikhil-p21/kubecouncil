@@ -299,6 +299,23 @@ h2 {
   color: #164d5b;
 }
 
+.timeline-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.timeline-heading h2 {
+  margin-bottom: 0;
+}
+
+.timeline-heading span {
+  color: #17633c;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
 .evidence-window {
   margin-bottom: 7px;
   color: #5e7076;

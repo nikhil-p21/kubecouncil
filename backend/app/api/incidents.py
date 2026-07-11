@@ -1,15 +1,18 @@
 """Minimal fake-backed incident API used by the first incident-response slice."""
 
+import asyncio
+import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Annotated, cast
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import Field
 
-from app.domain.incident_fakes import InMemoryIncidentStore
 from app.domain.incidents import (
-    AlertSignal,
+    AlertSignalEvidence,
     ApplicationProfileProvider,
     AuditEvent,
     EnrollmentProvider,
@@ -20,6 +23,7 @@ from app.domain.incidents import (
     WorkloadReference,
 )
 from app.domain.models import KubeCouncilModel
+from app.services.alerts import AlertNormalizer, AlertNotification
 from app.services.enrollment import EnrollmentChecker, require_enrolled_target
 from app.services.evidence import InitialEvidenceWindowCollector
 
@@ -38,11 +42,21 @@ class OpenIncidentRequest(KubeCouncilModel):
 
 def get_incident_store(request: Request) -> IncidentStore:
     store = getattr(request.app.state, "incident_store", None)
-    if not isinstance(store, InMemoryIncidentStore):
+    if not all(
+        callable(getattr(store, method, None))
+        for method in (
+            "create",
+            "get",
+            "list",
+            "append_alert_signal",
+            "append_audit_event",
+            "timeline",
+        )
+    ):
         raise RuntimeError(
             "incident store is unavailable; application lifespan did not initialize it"
         )
-    return store
+    return cast(IncidentStore, store)
 
 
 def get_application_profile_provider(request: Request) -> ApplicationProfileProvider:
@@ -112,18 +126,30 @@ def open_incident(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "enrollment_not_ready", "message": str(error)},
         ) from error
-    signal = AlertSignal(
-        signal_id=f"manual-{uuid4().hex}",
-        application_id=profile.application_id,
-        namespace=request.target.namespace,
-        workload_name=request.target.name,
-        workload_namespace=request.target.namespace,
-        summary=request.summary,
-        observed_at=datetime.now(UTC),
+    signal = AlertNormalizer.normalize(
+        AlertNotification(
+            notification_id=f"manual-{uuid4().hex}",
+            application_id=profile.application_id,
+            namespace=request.target.namespace,
+            workload_name=request.target.name,
+            summary=request.summary,
+            observed_at=datetime.now(UTC),
+            provider_incident_id=None,
+        )
     )
     record = store.create(
         profile,
         signal,
+    )
+    record = store.append_alert_signal(
+        record.incident.incident_id,
+        AlertSignalEvidence(
+            notification_id=signal.signal_id,
+            incident_id=record.incident.incident_id,
+            signal=signal,
+            provider_state="open",
+            received_at=datetime.now(UTC),
+        ),
     )
     record = store.append_audit_event(
         record.incident.incident_id,
@@ -153,6 +179,69 @@ def list_incidents(
     store: Annotated[IncidentStore, Depends(get_incident_store)],
 ) -> tuple[InvestigationRecord, ...]:
     return store.list()
+
+
+@router.get("/{incident_id}/timeline", response_model=tuple[AuditEvent, ...])
+def replay_timeline(
+    incident_id: str,
+    store: Annotated[IncidentStore, Depends(get_incident_store)],
+    after: Annotated[int, Query(ge=0)] = 0,
+) -> tuple[AuditEvent, ...]:
+    try:
+        return store.timeline(incident_id, after=after)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "incident_not_found", "message": str(error)},
+        ) from error
+
+
+@router.get("/{incident_id}/events")
+def stream_timeline(
+    incident_id: str,
+    request: Request,
+    store: Annotated[IncidentStore, Depends(get_incident_store)],
+    after: Annotated[int, Query(ge=0)] = 0,
+    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+) -> StreamingResponse:
+    """Replay durable events and continue from the last acknowledged EventSource cursor."""
+
+    try:
+        header_cursor = int(last_event_id) if last_event_id is not None else 0
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "invalid_timeline_cursor", "message": "Last-Event-ID must be numeric"},
+        ) from error
+    cursor = max(after, header_cursor)
+    try:
+        store.timeline(incident_id, after=cursor)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "incident_not_found", "message": str(error)},
+        ) from error
+
+    async def encode() -> AsyncIterator[str]:
+        current_cursor = cursor
+        while not await request.is_disconnected():
+            events = store.timeline(incident_id, after=current_cursor)
+            for event in events:
+                current_cursor = event.cursor
+                yield (
+                    f"id: {event.cursor}\n"
+                    "event: timeline\n"
+                    f"data: {json.dumps(event.model_dump(mode='json'))}\n\n"
+                )
+            if not events:
+                yield ": heartbeat\n\n"
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        encode(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/{incident_id}", response_model=InvestigationRecord)

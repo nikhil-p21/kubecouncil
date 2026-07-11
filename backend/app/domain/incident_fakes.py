@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from app.domain.incidents import (
     AlertSignal,
+    AlertSignalEvidence,
     ApplicationProfile,
     ApplicationProfileLoadResult,
     AuditEvent,
@@ -378,6 +379,22 @@ class InMemoryIncidentStore(IncidentStore):
             raise ValueError("evidence already exists and is append-only")
         return self._replace(record.model_copy(update={"evidence": (*record.evidence, evidence)}))
 
+    def append_alert_signal(
+        self, incident_id: str, signal: AlertSignalEvidence
+    ) -> InvestigationRecord:
+        record = self._required_record(incident_id)
+        if signal.incident_id != incident_id:
+            raise ValueError("alert signal evidence must belong to the requested incident")
+        if signal.signal.application_id != record.incident.application_id:
+            raise ValueError("alert signal evidence must belong to the enrolled application")
+        if any(
+            item.notification_id == signal.notification_id for item in record.alert_signals
+        ):
+            raise ValueError("alert signal evidence already exists and is append-only")
+        return self._replace(
+            record.model_copy(update={"alert_signals": (*record.alert_signals, signal)})
+        )
+
     def append_evidence_retrieval_failure(
         self, incident_id: str, failure: EvidenceRetrievalFailure
     ) -> InvestigationRecord:
@@ -405,8 +422,14 @@ class InMemoryIncidentStore(IncidentStore):
             raise ValueError("audit event must belong to the requested incident")
         if any(item.event_id == event.event_id for item in record.audit_events):
             raise ValueError("audit event already exists and is append-only")
-        updated = record.model_copy(update={"audit_events": (*record.audit_events, event)})
+        next_cursor = record.audit_events[-1].cursor + 1 if record.audit_events else 1
+        stored_event = event.model_copy(update={"cursor": next_cursor})
+        updated = record.model_copy(update={"audit_events": (*record.audit_events, stored_event)})
         return self._replace(updated)
+
+    def timeline(self, incident_id: str, *, after: int = 0) -> tuple[AuditEvent, ...]:
+        record = self._required_record(incident_id)
+        return tuple(event for event in record.audit_events if event.cursor > after)
 
     def compare_and_set(
         self,
@@ -472,8 +495,8 @@ class InMemoryIncidentStore(IncidentStore):
             occurred_at=datetime.now(UTC),
             actor="local-operator",
         )
-        self.append_audit_event(incident_id, event)
-        return event
+        updated = self.append_audit_event(incident_id, event)
+        return updated.audit_events[-1]
 
     def _required_record(self, incident_id: str) -> InvestigationRecord:
         record = self.get(incident_id)

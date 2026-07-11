@@ -23,6 +23,7 @@ type IncidentRecord = {
     workloads: Array<{ reference: { name: string }; executable: boolean; protected_dependency: boolean }>;
   };
   evidence_window: { started_at: string; ended_at: string; captured_at: string };
+  alert_signals: Array<{ notification_id: string; provider_state: "open" | "closed" }>;
   evidence: Array<{
     evidence_id: string;
     source: string;
@@ -44,7 +45,7 @@ type IncidentRecord = {
     occurred_at: string;
     message: string;
   }>;
-  audit_events: Array<{ event_id: string; event_type: string; occurred_at: string; actor: string }>;
+  audit_events: Array<{ event_id: string; event_type: string; occurred_at: string; actor: string; cursor: number }>;
 };
 
 type ApiError = { detail?: { code?: string; message?: string } };
@@ -110,6 +111,33 @@ export function App() {
   useEffect(() => {
     void loadManagedApplications();
   }, []);
+
+  useEffect(() => {
+    if (!record || typeof EventSource === "undefined") {
+      return;
+    }
+    const cursor = Math.max(0, ...record.audit_events.map((event) => event.cursor));
+    const source = new EventSource(
+      `/api/incidents/${record.incident.incident_id}/events?after=${cursor}`,
+    );
+    const receiveTimelineEvent = (message: MessageEvent<string>) => {
+      let event: IncidentRecord["audit_events"][number];
+      try {
+        event = JSON.parse(message.data) as IncidentRecord["audit_events"][number];
+      } catch (error) {
+        console.error("Ignored malformed timeline event", error);
+        return;
+      }
+      setRecord((current) => {
+        if (!current || current.audit_events.some((item) => item.cursor === event.cursor)) {
+          return current;
+        }
+        return { ...current, audit_events: [...current.audit_events, event] };
+      });
+    };
+    source.addEventListener("timeline", receiveTimelineEvent as EventListener);
+    return () => source.close();
+  }, [record?.incident.incident_id]);
 
   async function loadManagedApplications(): Promise<void> {
     try {
@@ -287,7 +315,10 @@ function IncidentDetail({ record }: { record: IncidentRecord }) {
       </article>
 
       <article className="incident-card incident-timeline">
-        <h2>Audit timeline</h2>
+        <div className="timeline-heading">
+          <h2>Audit timeline</h2>
+          <span>Live · reconnectable</span>
+        </div>
         <ol className="plain-list">
           {record.audit_events.map((event) => (
             <li key={event.event_id}>
