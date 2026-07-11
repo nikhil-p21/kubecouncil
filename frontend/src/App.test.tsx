@@ -22,6 +22,9 @@ describe("App", () => {
   it("opens and displays a fake incident with independent status dimensions", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
       const path = typeof input === "string" ? input : input.toString();
+      if (path === "/api/identity/me") {
+        return jsonResponse(responderIdentity());
+      }
       if (path === "/api/incidents") {
         return jsonResponse(incidentRecord());
       }
@@ -32,6 +35,7 @@ describe("App", () => {
     });
     renderApp();
 
+    await act(async () => {});
     await act(async () => {
       buttonByName("Open fake incident").click();
     });
@@ -55,7 +59,10 @@ describe("App", () => {
   });
 
   it("shows Enrollment readiness and keeps a protected dependency observe-only", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async () => jsonResponse([managedApplication()]));
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
+      const path = typeof input === "string" ? input : input.toString();
+      return jsonResponse(path === "/api/identity/me" ? responderIdentity() : [managedApplication()]);
+    });
     renderApp();
 
     await act(async () => {});
@@ -67,8 +74,12 @@ describe("App", () => {
   });
 
   it("shows exact profile validation failures without claiming Enrollment", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
-      jsonResponse([
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
+      const path = typeof input === "string" ? input : input.toString();
+      if (path === "/api/identity/me") {
+        return jsonResponse(responderIdentity());
+      }
+      return jsonResponse([
         {
           application_profile: null,
           profile_load: {
@@ -83,8 +94,8 @@ describe("App", () => {
           health: { status: "unknown", message: "Health evidence has not been connected yet." },
           incident_count: 0,
         },
-      ]),
-    );
+      ]);
+    });
     renderApp();
 
     await act(async () => {});
@@ -107,10 +118,14 @@ describe("App", () => {
     );
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
       const path = typeof input === "string" ? input : input.toString();
+      if (path === "/api/identity/me") {
+        return jsonResponse(responderIdentity());
+      }
       return jsonResponse(path === "/api/incidents" ? incidentRecord() : [managedApplication()]);
     });
     renderApp();
 
+    await act(async () => {});
     await act(async () => buttonByName("Open fake incident").click());
     expect(eventSources[0]?.url).toBe("/api/incidents/inc-123/events?after=1");
 
@@ -137,16 +152,23 @@ describe("App", () => {
   it("runs the Council and shows findings, disagreements, hypotheses, and outcome", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
       const path = typeof input === "string" ? input : input.toString();
+      if (path === "/api/identity/me") {
+        return jsonResponse(responderIdentity());
+      }
       if (path === "/api/incidents") {
         return jsonResponse(incidentRecord());
       }
       if (path === "/api/incidents/inc-123/investigate") {
         return jsonResponse(investigatedIncidentRecord());
       }
+      if (path === "/api/incidents/inc-123/approval-review") {
+        return jsonResponse(approvalReview());
+      }
       return jsonResponse([managedApplication()]);
     });
     renderApp();
 
+    await act(async () => {});
     await act(async () => buttonByName("Open fake incident").click());
     await act(async () => buttonByName("Run Council").click());
 
@@ -168,6 +190,71 @@ describe("App", () => {
     expect(screenText()).toContain("Checkout · 2 consecutive 60-second windows");
     expect(screenText()).toContain("Known risks");
     expect(screenText()).toContain("Rollback behavior");
+  });
+
+  it("shows freshness-bound review context and submits one Responder decision", async () => {
+    const requests: Array<{ path: string; init?: RequestInit }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const path = typeof input === "string" ? input : input.toString();
+        requests.push({ path, init });
+        if (path === "/api/identity/me") {
+          return jsonResponse(responderIdentity());
+        }
+        if (path === "/api/incidents") {
+          return jsonResponse(incidentRecord());
+        }
+        if (path === "/api/incidents/inc-123/investigate") {
+          return jsonResponse(investigatedIncidentRecord());
+        }
+        if (path === "/api/incidents/inc-123/approval-review") {
+          return jsonResponse(approvalReview());
+        }
+        if (path === "/api/incidents/inc-123/approval-decisions") {
+          return jsonResponse(approvedIncidentRecord());
+        }
+        return jsonResponse([managedApplication()]);
+      },
+    );
+    renderApp();
+
+    await act(async () => {});
+    await act(async () => buttonByName("Open fake incident").click());
+    await act(async () => buttonByName("Run Council").click());
+    await act(async () => {});
+
+    expect(screenText()).toContain("Authenticated Responder");
+    expect(screenText()).toContain("responder@example.com");
+    expect(screenText()).toContain("Resource version rv-8 · generation 8 · revision 8");
+    expect(screenText()).toContain("Proposal hash: proposal-hash");
+    expect(screenText()).toContain("Evidence hash: evidence-window-hash");
+
+    await act(async () => buttonByName("Approve proposal").click());
+
+    const decision = requests.find(
+      (request) => request.path === "/api/incidents/inc-123/approval-decisions",
+    );
+    expect(JSON.parse(decision?.init?.body as string)).toEqual({
+      decision: "approved",
+      reviewed_binding: approvalReview().binding,
+    });
+    expect(screenText()).toContain("Approved by responder@example.com");
+  });
+
+  it("keeps Viewer identity read-only", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
+      const path = typeof input === "string" ? input : input.toString();
+      if (path === "/api/identity/me") {
+        return jsonResponse({ principal: "viewer@example.com", subject: "viewer-1", role: "viewer" });
+      }
+      return jsonResponse([managedApplication()]);
+    });
+    renderApp();
+
+    await act(async () => {});
+
+    expect(screenText()).toContain("Authenticated Viewer");
+    expect(document.body.textContent).not.toContain("Open fake incident");
   });
 });
 
@@ -379,10 +466,57 @@ function investigatedIncidentRecord() {
       ],
       evaluated_at: "2026-07-11T00:00:02Z",
       workload_resource_version: "rv-8",
+      workload_generation: 8,
+      workload_revision: 8,
       patch: {},
       dry_run_diff: "Deployment/recommendationservice: revision 8 -> 7",
       rejection_reason: null,
     },
+  };
+}
+
+function responderIdentity() {
+  return {
+    principal: "responder@example.com",
+    subject: "accounts.google.com:1234",
+    role: "responder",
+  };
+}
+
+function approvalReview() {
+  return {
+    incident_id: "inc-123",
+    proposal_id: "proposal-1",
+    responder_principal: "responder@example.com",
+    binding: {
+      incident_version: 2,
+      proposal_hash: "proposal-hash",
+      evidence_hash: "evidence-window-hash",
+      workload_resource_version: "rv-8",
+      workload_generation: 8,
+      workload_revision: 8,
+      policy_hash: "policy-hash",
+      dry_run_hash: "dry-run-hash",
+      recovery_criteria_hash: "recovery-hash",
+      failure_strategy_hash: "failure-hash",
+      expires_at: "2026-07-11T00:05:00Z",
+    },
+  };
+}
+
+function approvedIncidentRecord() {
+  const record = investigatedIncidentRecord();
+  return {
+    ...record,
+    incident: { ...record.incident, version: 3 },
+    approvals: [
+      {
+        approval_id: "approval-1",
+        responder_principal: "responder@example.com",
+        decision: "approved",
+        decided_at: "2026-07-11T00:03:00Z",
+      },
+    ],
   };
 }
 

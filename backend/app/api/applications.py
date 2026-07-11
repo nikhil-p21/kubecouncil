@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
+from app.api.identity import get_current_identity
 from app.api.incidents import (
     get_application_profile_provider,
     get_enrollment_provider,
@@ -20,7 +21,11 @@ from app.domain.incidents import (
 )
 from app.services.enrollment import EnrollmentChecker
 
-router = APIRouter(prefix="/api/applications", tags=["applications"])
+router = APIRouter(
+    prefix="/api/applications",
+    tags=["applications"],
+    dependencies=[Depends(get_current_identity)],
+)
 
 
 @router.get("", response_model=tuple[ManagedApplication, ...])

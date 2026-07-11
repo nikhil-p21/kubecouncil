@@ -10,6 +10,7 @@ from app.domain.incidents import (
     AlertSignal,
     AlertSignalEvidence,
     ApplicationProfile,
+    Approval,
     AuditEvent,
     CoordinatorOutput,
     EvidenceObservation,
@@ -232,6 +233,20 @@ class FirestoreIncidentStore:
     ) -> InvestigationRecord:
         return self._mutate(
             incident_id, lambda store: store.record_policy_decision(incident_id, decision)
+        )
+
+    def record_approval_decision(
+        self,
+        incident_id: str,
+        expected_version: int,
+        approval: Approval,
+        event: AuditEvent,
+    ) -> InvestigationRecord:
+        return self._mutate(
+            incident_id,
+            lambda store: store.record_approval_decision(
+                incident_id, expected_version, approval, event
+            ),
         )
 
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord:

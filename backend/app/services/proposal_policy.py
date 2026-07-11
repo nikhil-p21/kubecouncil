@@ -380,6 +380,8 @@ class DeterministicProposalPolicy:
             checks=tuple(checks),
             evaluated_at=datetime.now(UTC),
             workload_resource_version=state.resource_version if state else None,
+            workload_generation=state.generation if state else None,
+            workload_revision=state.current_revision if state else None,
             patch=patch,
             dry_run_diff=dry_run_diff,
             rejection_reason=rejection_reason,

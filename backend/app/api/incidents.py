@@ -11,27 +11,39 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from fastapi.responses import StreamingResponse
 from pydantic import Field
 
+from app.api.identity import get_current_identity, require_responder
+from app.domain.identity import OperatorIdentity
 from app.domain.incidents import (
     AlertSignalEvidence,
     ApplicationProfileProvider,
+    ApprovalBinding,
+    ApprovalDecision,
+    ApprovalReview,
     AuditEvent,
     EnrollmentProvider,
     EvidenceProvider,
     EvidenceRedactor,
+    IncidentLifecycle,
     IncidentStore,
     InvestigationRecord,
     SpecialistRole,
     WorkloadReference,
+    transition_incident,
 )
 from app.domain.models import KubeCouncilModel
 from app.services.alerts import AlertNormalizer, AlertNotification
+from app.services.approval import ApprovalError, ApprovalService
 from app.services.council import BoundedIncidentCouncil, CouncilError
 from app.services.enrollment import EnrollmentChecker, require_enrolled_target
 from app.services.evidence import InitialEvidenceWindowCollector
 from app.services.evidence_gateway import EvidenceGatewayError, EvidenceQueryGateway
 from app.services.proposal_policy import DeterministicProposalPolicy, ProposalPolicyError
 
-router = APIRouter(prefix="/api/incidents", tags=["incidents"])
+router = APIRouter(
+    prefix="/api/incidents",
+    tags=["incidents"],
+    dependencies=[Depends(get_current_identity)],
+)
 
 
 class OpenIncidentRequest(KubeCouncilModel):
@@ -52,6 +64,15 @@ class RunEvidenceQueryRequest(KubeCouncilModel):
     query_round: int = Field(ge=1, le=2)
 
 
+class DecideProposalRequest(KubeCouncilModel):
+    decision: ApprovalDecision
+    reviewed_binding: ApprovalBinding
+
+
+class CloseIncidentRequest(KubeCouncilModel):
+    expected_version: int = Field(ge=0)
+
+
 def get_incident_store(request: Request) -> IncidentStore:
     store = getattr(request.app.state, "incident_store", None)
     if not all(
@@ -67,6 +88,7 @@ def get_incident_store(request: Request) -> IncidentStore:
             "append_model_invocation",
             "complete_investigation",
             "record_policy_decision",
+            "record_approval_decision",
             "append_evidence_retrieval_failure",
             "append_audit_event",
             "timeline",
@@ -127,9 +149,19 @@ def get_proposal_policy(request: Request) -> DeterministicProposalPolicy:
     return cast(DeterministicProposalPolicy, policy)
 
 
+def get_approval_service(request: Request) -> ApprovalService:
+    service = getattr(request.app.state, "approval_service", None)
+    if not all(
+        callable(getattr(service, method, None)) for method in ("review", "decide")
+    ):
+        raise RuntimeError("Approval service is unavailable")
+    return cast(ApprovalService, service)
+
+
 @router.post("", response_model=InvestigationRecord, status_code=status.HTTP_201_CREATED)
 def open_incident(
     request: OpenIncidentRequest,
+    identity: Annotated[OperatorIdentity, Depends(require_responder)],
     store: Annotated[IncidentStore, Depends(get_incident_store)],
     profiles: Annotated[ApplicationProfileProvider, Depends(get_application_profile_provider)],
     enrollment_provider: Annotated[EnrollmentProvider, Depends(get_enrollment_provider)],
@@ -198,7 +230,7 @@ def open_incident(
             incident_id=record.incident.incident_id,
             event_type="incident_opened",
             occurred_at=datetime.now(UTC),
-            actor="local-operator",
+            actor=identity.principal,
         ),
     )
     InitialEvidenceWindowCollector(evidence_provider, evidence_redactor).collect(
@@ -224,6 +256,7 @@ def list_incidents(
 @router.post("/{incident_id}/investigate", response_model=InvestigationRecord)
 async def investigate_incident(
     incident_id: str,
+    identity: Annotated[OperatorIdentity, Depends(require_responder)],
     store: Annotated[IncidentStore, Depends(get_incident_store)],
     council: Annotated[BoundedIncidentCouncil, Depends(get_incident_council)],
     policy: Annotated[DeterministicProposalPolicy, Depends(get_proposal_policy)],
@@ -244,6 +277,83 @@ async def investigate_incident(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND if missing else status.HTTP_409_CONFLICT,
             detail={"code": "proposal_policy_rejected", "message": str(error)},
+        ) from error
+
+
+@router.get("/{incident_id}/approval-review", response_model=ApprovalReview)
+def review_proposal(
+    incident_id: str,
+    identity: Annotated[OperatorIdentity, Depends(require_responder)],
+    store: Annotated[IncidentStore, Depends(get_incident_store)],
+    service: Annotated[ApprovalService, Depends(get_approval_service)],
+) -> ApprovalReview:
+    try:
+        return service.review(store, incident_id, identity)
+    except ApprovalError as error:
+        missing = str(error) == "incident does not exist"
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND if missing else status.HTTP_409_CONFLICT,
+            detail={"code": "approval_review_rejected", "message": str(error)},
+        ) from error
+
+
+@router.post("/{incident_id}/approval-decisions", response_model=InvestigationRecord)
+def decide_proposal(
+    incident_id: str,
+    request: DecideProposalRequest,
+    identity: Annotated[OperatorIdentity, Depends(require_responder)],
+    store: Annotated[IncidentStore, Depends(get_incident_store)],
+    service: Annotated[ApprovalService, Depends(get_approval_service)],
+) -> InvestigationRecord:
+    try:
+        return service.decide(
+            store,
+            incident_id=incident_id,
+            identity=identity,
+            decision=request.decision,
+            reviewed_binding=request.reviewed_binding,
+        )
+    except ApprovalError as error:
+        missing = str(error) == "incident does not exist"
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND if missing else status.HTTP_409_CONFLICT,
+            detail={"code": "approval_rejected", "message": str(error)},
+        ) from error
+
+
+@router.post("/{incident_id}/close", response_model=InvestigationRecord)
+def close_incident(
+    incident_id: str,
+    request: CloseIncidentRequest,
+    identity: Annotated[OperatorIdentity, Depends(require_responder)],
+    store: Annotated[IncidentStore, Depends(get_incident_store)],
+) -> InvestigationRecord:
+    record = store.get(incident_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "incident_not_found", "message": "incident does not exist"},
+        )
+    try:
+        replacement = transition_incident(
+            record.incident, lifecycle=IncidentLifecycle.CLOSED
+        )
+        store.compare_and_set(incident_id, request.expected_version, replacement)
+        return store.append_audit_event(
+            incident_id,
+            AuditEvent(
+                event_id=f"audit-{uuid4().hex}",
+                incident_id=incident_id,
+                event_type="incident_closed",
+                occurred_at=datetime.now(UTC),
+                actor=identity.principal,
+                details={"subject": identity.subject},
+            ),
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "incident_close_rejected", "message": str(error)},
         ) from error
 
 

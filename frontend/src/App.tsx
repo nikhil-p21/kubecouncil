@@ -5,6 +5,28 @@ import "./App.css";
 type Outcome = "not_started" | "proposal_ready" | "needs_more_evidence" | "no_safe_action" | "inconclusive";
 type InterventionOutcome = "not_started" | "monitoring" | "succeeded" | "rolled_back" | "failed" | "safe_halted";
 type SpecialistRole = "health" | "logs" | "metrics" | "change";
+type OperatorIdentity = { principal: string; subject: string; role: "viewer" | "responder" };
+
+type ApprovalBinding = {
+  incident_version: number;
+  proposal_hash: string;
+  evidence_hash: string;
+  workload_resource_version: string;
+  workload_generation: number;
+  workload_revision: number;
+  policy_hash: string;
+  dry_run_hash: string;
+  recovery_criteria_hash: string;
+  failure_strategy_hash: string;
+  expires_at: string;
+};
+
+type ApprovalReview = {
+  incident_id: string;
+  proposal_id: string;
+  responder_principal: string;
+  binding: ApprovalBinding;
+};
 
 type IncidentRecord = {
   incident: {
@@ -102,7 +124,15 @@ type IncidentRecord = {
     dry_run_diff: string | null;
     rejection_reason: string | null;
     workload_resource_version: string | null;
+    workload_generation: number | null;
+    workload_revision: number | null;
   } | null;
+  approvals: Array<{
+    approval_id: string;
+    responder_principal: string;
+    decision: "approved" | "rejected";
+    decided_at: string;
+  }>;
   audit_events: Array<{
     event_id: string;
     event_type: string;
@@ -173,10 +203,27 @@ export function App() {
   const [investigating, setInvestigating] = useState(false);
   const [applications, setApplications] = useState<ManagedApplication[]>([]);
   const [applicationsMessage, setApplicationsMessage] = useState("Loading Enrollment readiness.");
+  const [identity, setIdentity] = useState<OperatorIdentity | null>(null);
+  const [approvalReview, setApprovalReview] = useState<ApprovalReview | null>(null);
+  const [deciding, setDeciding] = useState(false);
 
   useEffect(() => {
+    void loadIdentity();
     void loadManagedApplications();
   }, []);
+
+  useEffect(() => {
+    if (
+      !record ||
+      identity?.role !== "responder" ||
+      record.incident.lifecycle !== "awaiting_approval" ||
+      record.approvals.length
+    ) {
+      setApprovalReview(null);
+      return;
+    }
+    void loadApprovalReview(record.incident.incident_id);
+  }, [identity?.role, record?.incident.incident_id, record?.incident.lifecycle, record?.approvals.length]);
 
   useEffect(() => {
     if (!record || typeof EventSource === "undefined") {
@@ -214,6 +261,27 @@ export function App() {
       console.error("Managed Application readiness load failed", error);
       setApplicationsMessage(
         error instanceof ApiRequestError ? error.message : "Unable to load Managed Applications.",
+      );
+    }
+  }
+
+  async function loadIdentity(): Promise<void> {
+    try {
+      setIdentity(await requestJson<OperatorIdentity>("/api/identity/me"));
+    } catch (error) {
+      setMessage(error instanceof ApiRequestError ? error.message : "Unable to verify operator identity.");
+    }
+  }
+
+  async function loadApprovalReview(incidentId: string): Promise<void> {
+    try {
+      setApprovalReview(
+        await requestJson<ApprovalReview>(`/api/incidents/${incidentId}/approval-review`),
+      );
+    } catch (error) {
+      setApprovalReview(null);
+      setMessage(
+        error instanceof ApiRequestError ? error.message : "Unable to load current Approval context.",
       );
     }
   }
@@ -259,12 +327,59 @@ export function App() {
     }
   }
 
+  async function decideProposal(decision: "approved" | "rejected"): Promise<void> {
+    if (!record || !approvalReview) {
+      return;
+    }
+    setDeciding(true);
+    setMessage(`${titleCase(decision)} decision is being freshness-checked.`);
+    try {
+      const decided = await requestJson<IncidentRecord>(
+        `/api/incidents/${record.incident.incident_id}/approval-decisions`,
+        {
+          method: "POST",
+          body: JSON.stringify({ decision, reviewed_binding: approvalReview.binding }),
+        },
+      );
+      setRecord(decided);
+      setApprovalReview(null);
+      setMessage(`Proposal ${decision} with an immutable Responder audit event.`);
+    } catch (error) {
+      setMessage(
+        error instanceof ApiRequestError ? error.message : "Unable to record the proposal decision.",
+      );
+      await loadApprovalReview(record.incident.incident_id);
+    } finally {
+      setDeciding(false);
+    }
+  }
+
+  async function closeIncident(incidentId: string, expectedVersion: number): Promise<void> {
+    try {
+      const closed = await requestJson<IncidentRecord>(`/api/incidents/${incidentId}/close`, {
+        method: "POST",
+        body: JSON.stringify({ expected_version: expectedVersion }),
+      });
+      setRecord(closed);
+      setMessage("Incident closed by the authenticated Responder.");
+    } catch (error) {
+      setMessage(error instanceof ApiRequestError ? error.message : "Unable to close the Incident.");
+    }
+  }
+
   return (
     <main className="incident-shell">
       <header className="incident-masthead">
         <p className="eyebrow">KubeCouncil / Incident response</p>
         <h1>Operations desk</h1>
         <p className="lede">Enrollment readiness comes before the narrow, auditable incident path.</p>
+        {identity ? (
+          <p className="identity-chip">
+            Authenticated {titleCase(identity.role)} · {identity.principal}
+          </p>
+        ) : (
+          <p className="identity-chip pending">Verifying signed operator identity…</p>
+        )}
       </header>
 
       <ManagedApplications applications={applications} message={applicationsMessage} />
@@ -274,14 +389,21 @@ export function App() {
           <strong>Local fake-backed workflow</strong>
           <p>{message}</p>
         </div>
-        <button className="primary-button" disabled={opening} onClick={() => void openIncident()}>
-          {opening ? "Opening…" : "Open fake incident"}
-        </button>
+        {identity?.role === "responder" ? (
+          <button className="primary-button" disabled={opening} onClick={() => void openIncident()}>
+            {opening ? "Opening…" : "Open fake incident"}
+          </button>
+        ) : null}
       </section>
 
       {record ? (
         <IncidentDetail
           investigating={investigating}
+          identity={identity}
+          approvalReview={approvalReview}
+          deciding={deciding}
+          onClose={closeIncident}
+          onDecision={decideProposal}
           onInvestigate={runCouncil}
           record={record}
         />
@@ -370,11 +492,21 @@ function EmptyIncidentState() {
 }
 
 function IncidentDetail({
+  approvalReview,
+  deciding,
+  identity,
   investigating,
+  onClose,
+  onDecision,
   onInvestigate,
   record,
 }: {
+  approvalReview: ApprovalReview | null;
+  deciding: boolean;
+  identity: OperatorIdentity | null;
   investigating: boolean;
+  onClose: (incidentId: string, expectedVersion: number) => Promise<void>;
+  onDecision: (decision: "approved" | "rejected") => Promise<void>;
   onInvestigate: (incidentId: string) => Promise<void>;
   record: IncidentRecord;
 }) {
@@ -385,9 +517,14 @@ function IncidentDetail({
         <p className="eyebrow">{profile.display_name}</p>
         <h2>{incident.summary}</h2>
         <p className="incident-id">{incident.incident_id}</p>
-        {incident.investigation_outcome === "not_started" ? (
+        {incident.investigation_outcome === "not_started" && identity?.role === "responder" ? (
           <button disabled={investigating} onClick={() => void onInvestigate(incident.incident_id)}>
             {investigating ? "Investigating…" : "Run Council"}
+          </button>
+        ) : null}
+        {incident.lifecycle !== "closed" && identity?.role === "responder" ? (
+          <button className="quiet-button" onClick={() => void onClose(incident.incident_id, incident.version)}>
+            Close incident
           </button>
         ) : null}
         <dl className="status-dimensions">
@@ -488,14 +625,34 @@ function IncidentDetail({
         )}
       </article>
 
-      {incident.investigation_outcome !== "not_started" ? <CouncilDetail record={record} /> : null}
+      {incident.investigation_outcome !== "not_started" ? (
+        <CouncilDetail
+          approvalReview={approvalReview}
+          deciding={deciding}
+          identity={identity}
+          onDecision={onDecision}
+          record={record}
+        />
+      ) : null}
     </section>
   );
 }
 
 const specialistRoles: SpecialistRole[] = ["health", "logs", "metrics", "change"];
 
-function CouncilDetail({ record }: { record: IncidentRecord }) {
+function CouncilDetail({
+  approvalReview,
+  deciding,
+  identity,
+  onDecision,
+  record,
+}: {
+  approvalReview: ApprovalReview | null;
+  deciding: boolean;
+  identity: OperatorIdentity | null;
+  onDecision: (decision: "approved" | "rejected") => Promise<void>;
+  record: IncidentRecord;
+}) {
   return (
     <article className="incident-card council-detail">
       <div className="timeline-heading">
@@ -558,12 +715,30 @@ function CouncilDetail({ record }: { record: IncidentRecord }) {
         )}
       </section>
 
-      <CouncilOutcome record={record} />
+      <CouncilOutcome
+        approvalReview={approvalReview}
+        deciding={deciding}
+        identity={identity}
+        onDecision={onDecision}
+        record={record}
+      />
     </article>
   );
 }
 
-function CouncilOutcome({ record }: { record: IncidentRecord }) {
+function CouncilOutcome({
+  approvalReview,
+  deciding,
+  identity,
+  onDecision,
+  record,
+}: {
+  approvalReview: ApprovalReview | null;
+  deciding: boolean;
+  identity: OperatorIdentity | null;
+  onDecision: (decision: "approved" | "rejected") => Promise<void>;
+  record: IncidentRecord;
+}) {
   const proposal = record.proposal;
   if (proposal) {
     const action = proposal.action;
@@ -635,6 +810,39 @@ function CouncilOutcome({ record }: { record: IncidentRecord }) {
         ) : (
           <p className="policy-rejection">Not approvable until deterministic policy and dry-run complete.</p>
         )}
+        {record.approvals.length ? (
+          <div className="approval-decision">
+            <strong>
+              {titleCase(record.approvals[0].decision)} by {record.approvals[0].responder_principal}
+            </strong>
+            <span>{new Date(record.approvals[0].decided_at).toLocaleString()}</span>
+          </div>
+        ) : policyPassed && identity?.role === "responder" && approvalReview ? (
+          <div className="approval-panel">
+            <h4>Freshness-bound Approval</h4>
+            <p>
+              Authenticated Responder · {approvalReview.responder_principal}
+            </p>
+            <p>
+              Resource version {approvalReview.binding.workload_resource_version} · generation {approvalReview.binding.workload_generation} · revision {approvalReview.binding.workload_revision}
+            </p>
+            <small>Proposal hash: {approvalReview.binding.proposal_hash}</small>
+            <small>Evidence hash: {approvalReview.binding.evidence_hash}</small>
+            <small>Policy hash: {approvalReview.binding.policy_hash}</small>
+            <small>Dry-run hash: {approvalReview.binding.dry_run_hash}</small>
+            <small>Recovery hash: {approvalReview.binding.recovery_criteria_hash}</small>
+            <small>Failure strategy hash: {approvalReview.binding.failure_strategy_hash}</small>
+            <small>Review expires: {new Date(approvalReview.binding.expires_at).toLocaleString()}</small>
+            <div className="approval-actions">
+              <button disabled={deciding} onClick={() => void onDecision("approved")}>
+                Approve proposal
+              </button>
+              <button className="reject-button" disabled={deciding} onClick={() => void onDecision("rejected")}>
+                Reject proposal
+              </button>
+            </div>
+          </div>
+        ) : null}
       </section>
     );
   }

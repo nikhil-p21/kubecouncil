@@ -1,16 +1,19 @@
 """Local incident-store fake for API and domain tests."""
 
 from datetime import UTC, datetime, timedelta
+from threading import RLock
 from typing import Any
 from uuid import uuid4
 
 from pydantic import ValidationError
 
+from app.domain.approval import approval_matches_record
 from app.domain.incidents import (
     AlertSignal,
     AlertSignalEvidence,
     ApplicationProfile,
     ApplicationProfileLoadResult,
+    Approval,
     AuditEvent,
     CoordinatorOutput,
     CriticalJourney,
@@ -368,6 +371,7 @@ class FakeEvidenceProvider(EvidenceProvider):
 class InMemoryIncidentStore(IncidentStore):
     def __init__(self) -> None:
         self._records: dict[str, InvestigationRecord] = {}
+        self._lock = RLock()
 
     def create(self, profile: ApplicationProfile, signal: AlertSignal) -> InvestigationRecord:
         if signal.application_id != profile.application_id:
@@ -570,6 +574,41 @@ class InMemoryIncidentStore(IncidentStore):
             update={"incident": updated_incident, "policy_decision": decision}
         )
         return self._replace(InvestigationRecord.model_validate(updated.model_dump()))
+
+    def record_approval_decision(
+        self,
+        incident_id: str,
+        expected_version: int,
+        approval: Approval,
+        event: AuditEvent,
+    ) -> InvestigationRecord:
+        """Atomically claim the one immutable human decision and its audit event."""
+
+        with self._lock:
+            record = self._required_record(incident_id)
+            if record.incident.version != expected_version:
+                raise ValueError("approval review context is stale")
+            if record.approvals:
+                raise ValueError("proposal is already decided")
+            if approval.incident_id != incident_id or event.incident_id != incident_id:
+                raise ValueError("Approval and audit event must belong to the requested incident")
+            if approval.expires_at <= datetime.now(UTC):
+                raise ValueError("approval review context expired")
+            if not approval_matches_record(record, approval):
+                raise ValueError("approval review context is stale")
+            next_cursor = record.audit_events[-1].cursor + 1 if record.audit_events else 1
+            stored_event = event.model_copy(update={"cursor": next_cursor})
+            updated_incident = record.incident.model_copy(
+                update={"version": record.incident.version + 1}
+            )
+            updated = record.model_copy(
+                update={
+                    "incident": updated_incident,
+                    "approvals": (approval,),
+                    "audit_events": (*record.audit_events, stored_event),
+                }
+            )
+            return self._replace(InvestigationRecord.model_validate(updated.model_dump()))
 
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord:
         record = self._required_record(incident_id)

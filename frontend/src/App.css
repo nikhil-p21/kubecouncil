@@ -194,6 +194,22 @@ h2 {
   line-height: 1.55;
 }
 
+.identity-chip {
+  display: inline-flex;
+  margin: 2px 0 0;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #d9eee2;
+  color: #17633c;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.identity-chip.pending {
+  background: #e4eaec;
+  color: #52656b;
+}
+
 .incident-control,
 .incident-card,
 .incident-empty {
@@ -259,6 +275,13 @@ h2 {
 
 .incident-summary > button {
   margin-bottom: 22px;
+}
+
+.incident-summary > .quiet-button {
+  margin-left: 8px;
+  border-color: #9aabaf;
+  background: transparent;
+  color: #455960;
 }
 
 .status-dimensions {
@@ -521,6 +544,41 @@ h2 {
   background: #e3f1e8;
   font-family: ui-monospace, "SFMono-Regular", monospace;
   overflow-wrap: anywhere;
+}
+
+.approval-panel,
+.approval-decision {
+  display: grid;
+  gap: 8px;
+  margin-top: 20px;
+  border: 1px solid #a9cdb8;
+  border-radius: 8px;
+  padding: 16px;
+  background: #f7fcf8;
+}
+
+.approval-panel h4,
+.approval-panel p,
+.approval-decision span {
+  margin: 0;
+}
+
+.approval-panel small {
+  color: #5e7076;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  overflow-wrap: anywhere;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.approval-actions .reject-button {
+  border-color: #a64c22;
+  background: #fff;
+  color: #8b4214;
 }
 
 @media (max-width: 760px) {

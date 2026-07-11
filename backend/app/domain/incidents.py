@@ -920,6 +920,8 @@ class PolicyDecision(KubeCouncilModel):
     checks: tuple[PolicyCheck, ...] = Field(min_length=1)
     evaluated_at: datetime
     workload_resource_version: str | None = None
+    workload_generation: int | None = Field(default=None, ge=1)
+    workload_revision: int | None = Field(default=None, ge=1)
     patch: DeploymentPatch | None = None
     dry_run_diff: str | None = None
     rejection_reason: str | None = None
@@ -938,6 +940,29 @@ class PolicyDecision(KubeCouncilModel):
         return self
 
 
+class ApprovalBinding(KubeCouncilModel):
+    """Complete, expiring snapshot of the context reviewed by a Responder."""
+
+    incident_version: int = Field(ge=0)
+    proposal_hash: str = Field(min_length=8)
+    evidence_hash: str = Field(min_length=8)
+    workload_resource_version: str = Field(min_length=1)
+    workload_generation: int = Field(ge=1)
+    workload_revision: int = Field(ge=1)
+    policy_hash: str = Field(min_length=8)
+    dry_run_hash: str = Field(min_length=8)
+    recovery_criteria_hash: str = Field(min_length=8)
+    failure_strategy_hash: str = Field(min_length=8)
+    expires_at: datetime
+
+
+class ApprovalReview(KubeCouncilModel):
+    incident_id: str = Field(min_length=1)
+    proposal_id: str = Field(min_length=1)
+    responder_principal: str = Field(min_length=1)
+    binding: ApprovalBinding
+
+
 class Approval(KubeCouncilModel):
     approval_id: str = Field(min_length=1)
     incident_id: str = Field(min_length=1)
@@ -948,7 +973,9 @@ class Approval(KubeCouncilModel):
     expires_at: datetime
     proposal_hash: str = Field(min_length=8)
     evidence_hash: str = Field(min_length=8)
-    workload_version: str = Field(min_length=1)
+    workload_resource_version: str = Field(min_length=1)
+    workload_generation: int = Field(ge=1)
+    workload_revision: int = Field(ge=1)
     policy_hash: str = Field(min_length=8)
     dry_run_hash: str = Field(min_length=8)
     recovery_criteria_hash: str = Field(min_length=8)
@@ -958,8 +985,6 @@ class Approval(KubeCouncilModel):
     def has_a_future_expiry(self) -> "Approval":
         if self.expires_at <= self.decided_at:
             raise ValueError("approval expiry must be after its decision time")
-        if self.expires_at <= datetime.now(self.expires_at.tzinfo):
-            raise ValueError("approval has expired and is stale")
         return self
 
 
@@ -1087,6 +1112,8 @@ class InvestigationRecord(KubeCouncilModel):
             or self.policy_decision.status is not PolicyStatus.PASSED
         ):
             raise ValueError("Approval cannot override a missing or rejected policy decision")
+        if len(self.approvals) > 1:
+            raise ValueError("a proposal may have only one immutable Approval decision")
         approval_ids = {approval.approval_id for approval in self.approvals}
         intervention_ids = {intervention.intervention_id for intervention in self.interventions}
         if self.proposal is None and self.interventions:
@@ -1145,6 +1172,14 @@ class IncidentStore(Protocol):
 
     def record_policy_decision(
         self, incident_id: str, decision: PolicyDecision
+    ) -> InvestigationRecord: ...
+
+    def record_approval_decision(
+        self,
+        incident_id: str,
+        expected_version: int,
+        approval: Approval,
+        event: AuditEvent,
     ) -> InvestigationRecord: ...
 
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord: ...

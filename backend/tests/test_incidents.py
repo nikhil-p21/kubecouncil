@@ -484,20 +484,22 @@ def test_typed_remediation_actions_round_trip(action: object) -> None:
     assert RemediationProposal.model_validate_json(proposal.model_dump_json()) == proposal
 
 
-def test_approval_rejects_a_stale_expiry() -> None:
+def test_approval_rejects_expiry_before_its_decision_time() -> None:
     now = datetime.now(UTC)
-    with pytest.raises(ValidationError, match="stale"):
+    with pytest.raises(ValidationError, match="after its decision time"):
         Approval(
             approval_id="approval-1",
             incident_id="incident-1",
             proposal_id="proposal-1",
             responder_principal="responder@example.com",
             decision=ApprovalDecision.APPROVED,
-            decided_at=now - timedelta(minutes=10),
+            decided_at=now,
             expires_at=now - timedelta(minutes=5),
             proposal_hash="proposal-hash",
             evidence_hash="evidence-hash",
-            workload_version="123",
+            workload_resource_version="123",
+            workload_generation=8,
+            workload_revision=8,
             policy_hash="policy-hash",
             dry_run_hash="dry-run-hash",
             recovery_criteria_hash="recovery-hash",
