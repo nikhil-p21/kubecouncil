@@ -1,0 +1,232 @@
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+
+from app.api.incidents import get_incident_store
+from app.domain.incident_fakes import InMemoryIncidentStore
+from app.domain.incidents import (
+    AlertSignal,
+    Approval,
+    ApprovalDecision,
+    EvidenceObservation,
+    EvidenceSource,
+    IncidentLifecycle,
+    InterventionOutcome,
+    InvestigationOutcome,
+    InvestigationRecord,
+    RecoveryCriteria,
+    RemediationProposal,
+    RestartDeploymentAction,
+    RollbackDeploymentAction,
+    ScaleDeploymentAction,
+    WorkloadReference,
+    transition_incident,
+)
+from app.main import app
+
+
+def test_alert_signal_rejects_a_cross_scope_workload() -> None:
+    with pytest.raises(ValidationError, match="same namespace"):
+        AlertSignal(
+            signal_id="alert-1",
+            application_id="online-boutique",
+            namespace="online-boutique",
+            workload_name="recommendationservice",
+            workload_namespace="other-namespace",
+            summary="recommendation service has restarted repeatedly",
+            observed_at=datetime.now(UTC),
+        )
+
+
+def test_incident_dimensions_transition_independently() -> None:
+    store = InMemoryIncidentStore()
+    incident = store.open_fake_incident("recommendationservice is OOMKilled")
+
+    investigating = transition_incident(
+        incident.incident, lifecycle=IncidentLifecycle.INVESTIGATING
+    )
+    awaiting_approval = transition_incident(
+        investigating,
+        lifecycle=IncidentLifecycle.AWAITING_APPROVAL,
+        investigation_outcome=InvestigationOutcome.PROPOSAL_READY,
+    )
+    assert awaiting_approval.intervention_outcome is InterventionOutcome.NOT_STARTED
+
+    mitigating = transition_incident(
+        awaiting_approval,
+        lifecycle=IncidentLifecycle.MITIGATING,
+        intervention_outcome=InterventionOutcome.SUCCEEDED,
+    )
+    assert mitigating.lifecycle is IncidentLifecycle.MITIGATING
+    assert mitigating.investigation_outcome is InvestigationOutcome.PROPOSAL_READY
+
+
+def test_incident_store_keeps_evidence_and_audit_events_append_only() -> None:
+    store = InMemoryIncidentStore()
+    record = store.open_fake_incident("recommendationservice is OOMKilled")
+    evidence = store.append_fake_evidence(record.incident.incident_id)
+    event = store.append_fake_audit_event(record.incident.incident_id, "incident_opened")
+
+    fetched = store.get(record.incident.incident_id)
+    assert fetched.evidence == (evidence,)
+    assert fetched.audit_events == (event,)
+    with pytest.raises(ValueError, match="already exists"):
+        store.append_evidence(record.incident.incident_id, evidence)
+
+
+def test_incident_store_rejects_evidence_outside_the_enrolled_scope() -> None:
+    store = InMemoryIncidentStore()
+    record = store.open_fake_incident("recommendationservice is OOMKilled")
+    evidence = EvidenceObservation(
+        evidence_id="evidence-outside-scope",
+        incident_id=record.incident.incident_id,
+        source=EvidenceSource.KUBERNETES,
+        observed_at=datetime.now(UTC),
+        scope=WorkloadReference(namespace="other-namespace", name="unmanaged-service"),
+        redacted_excerpt="untrusted observation",
+        content_hash="outside-scope-hash",
+        provider_reference="fake://kubernetes/pod/unmanaged-service-1",
+    )
+
+    with pytest.raises(ValueError, match="outside the enrolled application profile"):
+        store.append_evidence(record.incident.incident_id, evidence)
+
+
+def test_incident_store_compare_and_set_rejects_stale_versions() -> None:
+    store = InMemoryIncidentStore()
+    record = store.open_fake_incident("recommendationservice is OOMKilled")
+    updated = transition_incident(record.incident, lifecycle=IncidentLifecycle.INVESTIGATING)
+
+    stored = store.compare_and_set(
+        record.incident.incident_id, expected_version=0, replacement=updated
+    )
+    assert stored.incident.version == 1
+    with pytest.raises(ValueError, match="stale incident version"):
+        store.compare_and_set(record.incident.incident_id, expected_version=0, replacement=updated)
+
+
+def test_incident_store_compare_and_set_rejects_a_cross_profile_replacement() -> None:
+    store = InMemoryIncidentStore()
+    record = store.open_fake_incident("recommendationservice is OOMKilled")
+    replacement = record.incident.model_copy(update={"application_id": "unmanaged-application"})
+
+    with pytest.raises(ValueError, match="enrolled application"):
+        store.compare_and_set(
+            record.incident.incident_id, expected_version=0, replacement=replacement
+        )
+
+
+def test_incident_api_creates_and_returns_a_fake_incident() -> None:
+    store = InMemoryIncidentStore()
+    app.dependency_overrides[get_incident_store] = lambda: store
+    client = TestClient(app)
+    try:
+        created = client.post(
+            "/api/incidents",
+            json={"summary": "recommendationservice OOMKilled during checkout"},
+        )
+        assert created.status_code == 201
+        body = created.json()
+        assert body["incident"]["lifecycle"] == "open"
+        assert body["incident"]["investigation_outcome"] == "not_started"
+        assert body["incident"]["intervention_outcome"] == "not_started"
+        assert body["audit_events"][0]["event_type"] == "incident_opened"
+
+        fetched = client.get(f"/api/incidents/{body['incident']['incident_id']}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert fetched.status_code == 200
+    assert fetched.json() == body
+
+
+def test_expired_alert_window_is_rejected() -> None:
+    now = datetime.now(UTC)
+    with pytest.raises(ValidationError, match="end must be after start"):
+        AlertSignal(
+            signal_id="alert-1",
+            application_id="online-boutique",
+            namespace="online-boutique",
+            workload_name="recommendationservice",
+            workload_namespace="online-boutique",
+            summary="restarts",
+            observed_at=now - timedelta(minutes=10),
+            window_start=now,
+            window_end=now - timedelta(minutes=1),
+        )
+
+
+def test_terminal_investigation_outcome_cannot_regress() -> None:
+    incident = (
+        InMemoryIncidentStore().open_fake_incident("recommendationservice is OOMKilled").incident
+    )
+    inconclusive = transition_incident(
+        incident,
+        lifecycle=IncidentLifecycle.INVESTIGATING,
+        investigation_outcome=InvestigationOutcome.INCONCLUSIVE,
+    )
+
+    with pytest.raises(ValueError, match="investigation outcome transition"):
+        transition_incident(inconclusive, investigation_outcome=InvestigationOutcome.PROPOSAL_READY)
+
+
+def test_investigation_records_round_trip_as_provider_independent_contracts() -> None:
+    record = InMemoryIncidentStore().open_fake_incident("recommendationservice is OOMKilled")
+    assert InvestigationRecord.model_validate_json(record.model_dump_json()) == record
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        RollbackDeploymentAction(
+            target=WorkloadReference(namespace="online-boutique", name="recommendationservice"),
+            revision=4,
+        ),
+        ScaleDeploymentAction(
+            target=WorkloadReference(namespace="online-boutique", name="recommendationservice"),
+            replicas=3,
+        ),
+        RestartDeploymentAction(
+            target=WorkloadReference(namespace="online-boutique", name="recommendationservice"),
+            restart_token="restart-20260711",
+        ),
+    ],
+)
+def test_typed_remediation_actions_round_trip(action: object) -> None:
+    proposal = RemediationProposal(
+        proposal_id="proposal-1",
+        incident_id="incident-1",
+        action=action,
+        expected_impact="restore the checkout journey",
+        recovery_criteria=RecoveryCriteria(
+            critical_journey_name="checkout",
+            required_stable_windows=2,
+            stabilization_window_seconds=60,
+        ),
+        rollback_strategy="enter safe halt if restoration is not demonstrably safe",
+        evidence_hash="evidence-hash",
+    )
+    assert RemediationProposal.model_validate_json(proposal.model_dump_json()) == proposal
+
+
+def test_approval_rejects_a_stale_expiry() -> None:
+    now = datetime.now(UTC)
+    with pytest.raises(ValidationError, match="stale"):
+        Approval(
+            approval_id="approval-1",
+            incident_id="incident-1",
+            proposal_id="proposal-1",
+            responder_principal="responder@example.com",
+            decision=ApprovalDecision.APPROVED,
+            decided_at=now - timedelta(minutes=10),
+            expires_at=now - timedelta(minutes=5),
+            proposal_hash="proposal-hash",
+            evidence_hash="evidence-hash",
+            workload_version="123",
+            policy_hash="policy-hash",
+            dry_run_hash="dry-run-hash",
+            recovery_criteria_hash="recovery-hash",
+            failure_strategy_hash="failure-hash",
+        )
