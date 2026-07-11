@@ -1,24 +1,36 @@
 """Local incident-store fake for API and domain tests."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
+
+from pydantic import ValidationError
 
 from app.domain.incidents import (
     AlertSignal,
     ApplicationProfile,
+    ApplicationProfileLoadResult,
     AuditEvent,
     CriticalJourney,
+    EnrollmentProvider,
+    EnrollmentSnapshot,
     EvidenceBudget,
+    EvidenceMapping,
     EvidenceObservation,
+    EvidenceQueryKind,
     EvidenceSource,
     EvidenceWindow,
     Incident,
     IncidentStore,
     InvestigationRecord,
     ManagedWorkload,
+    NamespaceEnrollmentState,
+    ProfileValidationIssue,
     RecoveryCriteria,
     ReplicaBounds,
+    RoleBindingEnrollmentState,
     WorkloadCriticality,
+    WorkloadEnrollmentState,
     WorkloadReference,
 )
 
@@ -29,6 +41,11 @@ def fake_application_profile() -> ApplicationProfile:
         display_name="Online Boutique",
         version="v1",
         namespace="online-boutique",
+        namespaces=("online-boutique",),
+        investigator_identity="serviceaccount:kubecouncil:investigator",
+        investigator_role="investigator-read",
+        executor_identity="serviceaccount:kubecouncil:executor",
+        executor_role="executor-write",
         workloads=(
             ManagedWorkload(
                 reference=WorkloadReference(
@@ -53,6 +70,24 @@ def fake_application_profile() -> ApplicationProfile:
                 success_rate_minimum=0.99,
                 p95_latency_ms_maximum=1500,
                 minimum_request_count=100,
+                synthetic_probe={
+                    "name": "checkout-probe",
+                    "target": "http://frontend/checkout",
+                    "repetitions": 3,
+                },
+            ),
+        ),
+        evidence_mappings=(
+            EvidenceMapping(
+                source=EvidenceSource.KUBERNETES,
+                kind=EvidenceQueryKind.WORKLOAD_STATE,
+                identifier="recommendationservice-rollout",
+            ),
+            EvidenceMapping(
+                source=EvidenceSource.CLOUD_MONITORING,
+                kind=EvidenceQueryKind.METRICS,
+                identifier="checkout-success-rate",
+                query_template="sum(rate(checkout_requests_total[5m]))",
             ),
         ),
         evidence_budget=EvidenceBudget(
@@ -69,6 +104,126 @@ def fake_application_profile() -> ApplicationProfile:
     )
 
 
+class InMemoryApplicationProfileProvider:
+    """Fake ConfigMap-backed profile source that preserves validation failures for the UI."""
+
+    def __init__(self, profiles: tuple[ApplicationProfile | dict[str, Any], ...]) -> None:
+        self._profiles = profiles
+
+    def list_profiles(self) -> tuple[ApplicationProfileLoadResult, ...]:
+        return tuple(self._load(profile, index) for index, profile in enumerate(self._profiles))
+
+    def reload(self, profiles: tuple[ApplicationProfile | dict[str, Any], ...]) -> tuple[
+        ApplicationProfileLoadResult, ...
+    ]:
+        self._profiles = profiles
+        return self.list_profiles()
+
+    @staticmethod
+    def _load(
+        profile: ApplicationProfile | dict[str, Any], index: int
+    ) -> ApplicationProfileLoadResult:
+        source = f"fake://application-profiles/{index}"
+        try:
+            parsed = ApplicationProfile.model_validate(profile)
+        except ValidationError as error:
+            raw_application_id = (
+                profile.get("application_id") if isinstance(profile, dict) else None
+            )
+            application_id = raw_application_id if isinstance(raw_application_id, str) else None
+            return ApplicationProfileLoadResult(
+                source=source,
+                application_id=application_id,
+                errors=tuple(
+                    ProfileValidationIssue(
+                        location=".".join(str(part) for part in issue["loc"]),
+                        message=issue["msg"],
+                    )
+                    for issue in error.errors()
+                ),
+            )
+        return ApplicationProfileLoadResult(
+            source=source,
+            application_id=parsed.application_id,
+            profile=parsed,
+        )
+
+
+class FakeEnrollmentProvider(EnrollmentProvider):
+    """Read-only Kubernetes Enrollment facts for deterministic local verification."""
+
+    def __init__(self, snapshot: EnrollmentSnapshot) -> None:
+        self._snapshot = snapshot
+
+    @classmethod
+    def ready_for(cls, profile: ApplicationProfile) -> "FakeEnrollmentProvider":
+        return cls(
+            EnrollmentSnapshot(
+                namespaces=tuple(
+                    NamespaceEnrollmentState(
+                        namespace=namespace,
+                        exists=True,
+                        labels={"kubecouncil.io/enrolled": "true"},
+                    )
+                    for namespace in profile.namespaces
+                ),
+                workloads=tuple(
+                    WorkloadEnrollmentState(
+                        reference=workload.reference,
+                        exists=True,
+                        labels=(
+                            {"kubecouncil.io/managed": "true"}
+                            if workload.executable
+                            else {}
+                        ),
+                    )
+                    for workload in profile.workloads
+                ),
+                role_bindings=tuple(
+                    binding
+                    for namespace in profile.namespaces
+                    for binding in (
+                        RoleBindingEnrollmentState(
+                            namespace=namespace,
+                            subject=profile.investigator_identity,
+                            role=profile.investigator_role,
+                            exists=True,
+                        ),
+                        RoleBindingEnrollmentState(
+                            namespace=namespace,
+                            subject=profile.executor_identity,
+                            role=profile.executor_role,
+                            exists=True,
+                        ),
+                    )
+                ),
+                admission_policy_binding=True,
+            )
+        )
+
+    @classmethod
+    def unready_for(cls, profile: ApplicationProfile) -> "FakeEnrollmentProvider":
+        return cls(
+            EnrollmentSnapshot(
+                namespaces=tuple(
+                    NamespaceEnrollmentState(namespace=namespace, exists=True)
+                    for namespace in profile.namespaces
+                ),
+                workloads=tuple(
+                    WorkloadEnrollmentState(reference=workload.reference, exists=True)
+                    for workload in profile.workloads
+                ),
+            )
+        )
+
+    @staticmethod
+    def empty() -> "FakeEnrollmentProvider":
+        return FakeEnrollmentProvider(EnrollmentSnapshot())
+
+    def inspect(self, profile: ApplicationProfile) -> EnrollmentSnapshot:
+        return self._snapshot
+
+
 class InMemoryIncidentStore(IncidentStore):
     def __init__(self) -> None:
         self._records: dict[str, InvestigationRecord] = {}
@@ -76,6 +231,8 @@ class InMemoryIncidentStore(IncidentStore):
     def create(self, profile: ApplicationProfile, signal: AlertSignal) -> InvestigationRecord:
         if signal.application_id != profile.application_id:
             raise ValueError("alert signal application is not enrolled by the supplied profile")
+        if signal.namespace not in profile.namespaces:
+            raise ValueError("alert signal namespace is not enrolled by the supplied profile")
         workload = WorkloadReference(namespace=signal.namespace, name=signal.workload_name)
         if workload not in {managed.reference for managed in profile.workloads}:
             raise ValueError("alert signal workload is not enrolled by the supplied profile")

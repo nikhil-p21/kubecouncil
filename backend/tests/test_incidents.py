@@ -4,8 +4,17 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.api.incidents import get_incident_store
-from app.domain.incident_fakes import InMemoryIncidentStore
+from app.api.incidents import (
+    get_application_profile_provider,
+    get_enrollment_provider,
+    get_incident_store,
+)
+from app.domain.incident_fakes import (
+    FakeEnrollmentProvider,
+    InMemoryApplicationProfileProvider,
+    InMemoryIncidentStore,
+    fake_application_profile,
+)
 from app.domain.incidents import (
     AlertSignal,
     Approval,
@@ -120,7 +129,14 @@ def test_incident_store_compare_and_set_rejects_a_cross_profile_replacement() ->
 
 def test_incident_api_creates_and_returns_a_fake_incident() -> None:
     store = InMemoryIncidentStore()
+    profile = fake_application_profile()
     app.dependency_overrides[get_incident_store] = lambda: store
+    app.dependency_overrides[get_application_profile_provider] = (
+        lambda: InMemoryApplicationProfileProvider((profile,))
+    )
+    app.dependency_overrides[get_enrollment_provider] = (
+        lambda: FakeEnrollmentProvider.ready_for(profile)
+    )
     client = TestClient(app)
     try:
         created = client.post(

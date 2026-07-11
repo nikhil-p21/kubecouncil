@@ -24,6 +24,9 @@ describe("App", () => {
       if (path === "/api/incidents") {
         return jsonResponse(incidentRecord());
       }
+      if (path === "/api/applications") {
+        return jsonResponse([managedApplication()]);
+      }
       return jsonResponse([]);
     });
     renderApp();
@@ -37,6 +40,46 @@ describe("App", () => {
     expect(screenText()).toContain("Investigation: Not Started");
     expect(screenText()).toContain("Intervention: Not Started");
     expect(screenText()).toContain("incident_opened");
+  });
+
+  it("shows Enrollment readiness and keeps a protected dependency observe-only", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => jsonResponse([managedApplication()]));
+    renderApp();
+
+    await act(async () => {});
+
+    expect(screenText()).toContain("Online Boutique");
+    expect(screenText()).toContain("Enrolled");
+    expect(screenText()).toContain("redis-cart · protected dependency · observe only");
+    expect(screenText()).toContain("Incident history: 1");
+  });
+
+  it("shows exact profile validation failures without claiming Enrollment", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      jsonResponse([
+        {
+          application_profile: null,
+          profile_load: {
+            application_id: "broken-profile",
+            valid: false,
+            errors: [{ location: "workloads", message: "Field required" }],
+          },
+          enrollment: {
+            ready: false,
+            failed_checks: [{ code: "profile_valid", passed: false, message: "Field required" }],
+          },
+          health: { status: "unknown", message: "Health evidence has not been connected yet." },
+          incident_count: 0,
+        },
+      ]),
+    );
+    renderApp();
+
+    await act(async () => {});
+
+    expect(screenText()).toContain("Invalid Application Profile");
+    expect(screenText()).toContain("Not ready");
+    expect(screenText()).toContain("Field required");
   });
 });
 
@@ -115,5 +158,31 @@ function incidentRecord() {
         details: {},
       },
     ],
+  };
+}
+
+function managedApplication() {
+  return {
+    application_profile: {
+      application_id: "online-boutique",
+      display_name: "Online Boutique",
+      namespace: "online-boutique",
+      workloads: [
+        {
+          reference: { name: "recommendationservice" },
+          executable: true,
+          protected_dependency: false,
+        },
+        {
+          reference: { name: "redis-cart" },
+          executable: false,
+          protected_dependency: true,
+        },
+      ],
+    },
+    profile_load: { application_id: "online-boutique", valid: true, errors: [] },
+    enrollment: { ready: true, failed_checks: [] },
+    health: { status: "unknown", message: "Health evidence has not been connected yet." },
+    incident_count: 1,
   };
 }

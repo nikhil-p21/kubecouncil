@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Annotated, Literal, Protocol
 
-from pydantic import Field, model_validator
+from pydantic import Field, computed_field, model_validator
 
 from app.domain.models import KubeCouncilModel
 
@@ -65,6 +65,17 @@ class EvidenceQueryKind(StrEnum):
     ALERT_POLICY = "alert_policy"
 
 
+class EnrollmentCheckCode(StrEnum):
+    PROFILE_VALID = "profile_valid"
+    NAMESPACE_SELECTED = "namespace_selected"
+    NAMESPACE_ENROLLED_LABEL = "namespace_enrolled_label"
+    INVESTIGATOR_ROLE_BINDING = "investigator_role_binding"
+    EXECUTOR_ROLE_BINDING = "executor_role_binding"
+    WORKLOAD_SELECTED = "workload_selected"
+    MANAGED_WORKLOAD_LABEL = "managed_workload_label"
+    ADMISSION_POLICY_BINDING = "admission_policy_binding"
+
+
 class PolicyStatus(StrEnum):
     PASSED = "passed"
     REJECTED = "rejected"
@@ -116,11 +127,21 @@ class ManagedWorkload(KubeCouncilModel):
     def authority_is_explicit(self) -> "ManagedWorkload":
         if self.protected_dependency and self.executable:
             raise ValueError("protected dependencies cannot be executable")
+        if not self.executable and not self.protected_dependency:
+            raise ValueError("non-executable workloads must be protected dependencies")
         if not self.executable and self.allowed_actions:
             raise ValueError("non-executable workloads cannot allow remediation actions")
         if self.executable and not self.allowed_actions:
             raise ValueError("executable workloads must declare allowed remediation actions")
+        if len(self.allowed_actions) != len(set(self.allowed_actions)):
+            raise ValueError("workload allowed actions must be unique")
         return self
+
+
+class SyntheticProbe(KubeCouncilModel):
+    name: str = Field(min_length=1)
+    target: str = Field(min_length=1)
+    repetitions: int = Field(ge=1, le=10)
 
 
 class CriticalJourney(KubeCouncilModel):
@@ -128,6 +149,7 @@ class CriticalJourney(KubeCouncilModel):
     success_rate_minimum: float = Field(ge=0, le=1)
     p95_latency_ms_maximum: int = Field(gt=0)
     minimum_request_count: int = Field(ge=100)
+    synthetic_probe: SyntheticProbe | None = None
 
 
 class EvidenceBudget(KubeCouncilModel):
@@ -137,10 +159,27 @@ class EvidenceBudget(KubeCouncilModel):
     maximum_window_minutes: int = Field(gt=0, le=120)
 
 
+class EvidenceMapping(KubeCouncilModel):
+    """A profile-owned identity for an allowlisted evidence source and query."""
+
+    source: EvidenceSource
+    kind: EvidenceQueryKind
+    identifier: str = Field(min_length=1, max_length=500)
+    query_template: str | None = Field(default=None, min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def has_a_bounded_metric_query(self) -> "EvidenceMapping":
+        if self.kind == EvidenceQueryKind.METRICS and self.query_template is None:
+            raise ValueError("metric evidence mappings must declare a query template")
+        return self
+
+
 class RecoveryCriteria(KubeCouncilModel):
     critical_journey_name: str = Field(min_length=1)
     required_stable_windows: int = Field(ge=2)
     stabilization_window_seconds: int = Field(ge=60)
+    allow_synthetic_availability_fallback: bool = True
+    latency_requires_application_traffic: Literal[True] = True
 
 
 class ApplicationProfile(KubeCouncilModel):
@@ -148,22 +187,169 @@ class ApplicationProfile(KubeCouncilModel):
     display_name: str = Field(min_length=1)
     version: str = Field(min_length=1)
     namespace: str = Field(min_length=1, pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+    namespaces: tuple[
+        Annotated[str, Field(min_length=1, pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")], ...
+    ] = Field(min_length=1)
+    investigator_identity: str = Field(min_length=1)
+    investigator_role: str = Field(min_length=1)
+    executor_identity: str = Field(min_length=1)
+    executor_role: str = Field(min_length=1)
     workloads: tuple[ManagedWorkload, ...] = Field(min_length=1)
     critical_journeys: tuple[CriticalJourney, ...] = Field(min_length=1)
+    evidence_mappings: tuple[EvidenceMapping, ...] = Field(min_length=1)
     evidence_budget: EvidenceBudget
     recovery_criteria: RecoveryCriteria
 
     @model_validator(mode="after")
     def references_are_consistent(self) -> "ApplicationProfile":
+        if self.investigator_identity == self.executor_identity:
+            raise ValueError("Investigator and Executor identities must be distinct")
         workload_names = [workload.reference.name for workload in self.workloads]
         if len(workload_names) != len(set(workload_names)):
             raise ValueError("application profile workload names must be unique")
-        if any(workload.reference.namespace != self.namespace for workload in self.workloads):
-            raise ValueError("application profile workloads must use the enrolled namespace")
-        journeys = {journey.name for journey in self.critical_journeys}
-        if self.recovery_criteria.critical_journey_name not in journeys:
+        if len(self.namespaces) != len(set(self.namespaces)):
+            raise ValueError("application profile namespaces must be unique")
+        if self.namespace not in self.namespaces:
+            raise ValueError("application profile namespace must be in the namespace allowlist")
+        if any(workload.reference.namespace not in self.namespaces for workload in self.workloads):
+            raise ValueError("application profile workloads must use an enrolled namespace")
+        workload_name_set = set(workload_names)
+        for workload in self.workloads:
+            if workload.reference.name in workload.dependencies:
+                raise ValueError("application profile workloads cannot depend on themselves")
+            if any(dependency not in workload_name_set for dependency in workload.dependencies):
+                raise ValueError("workload dependencies must reference a declared workload")
+        journeys = {journey.name: journey for journey in self.critical_journeys}
+        if len(journeys) != len(self.critical_journeys):
+            raise ValueError("application profile critical journey names must be unique")
+        recovery_journey = journeys.get(self.recovery_criteria.critical_journey_name)
+        if recovery_journey is None:
             raise ValueError("recovery criteria must reference a declared critical journey")
+        if (
+            self.recovery_criteria.allow_synthetic_availability_fallback
+            and recovery_journey.synthetic_probe is None
+        ):
+            raise ValueError(
+                "synthetic availability fallback requires a critical journey synthetic probe"
+            )
+        mapping_keys = {
+            (mapping.source, mapping.kind, mapping.identifier) for mapping in self.evidence_mappings
+        }
+        if len(mapping_keys) != len(self.evidence_mappings):
+            raise ValueError("application profile evidence mappings must be unique")
         return self
+
+
+class ProfileValidationIssue(KubeCouncilModel):
+    location: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+
+
+class ApplicationProfileLoadResult(KubeCouncilModel):
+    """A profile-load outcome safe to expose at startup or reload time."""
+
+    source: str = Field(min_length=1)
+    application_id: str | None = None
+    profile: ApplicationProfile | None = None
+    errors: tuple[ProfileValidationIssue, ...] = ()
+
+    @model_validator(mode="after")
+    def is_complete(self) -> "ApplicationProfileLoadResult":
+        if self.profile is None and not self.errors:
+            raise ValueError(
+                "invalid application profile loads must include exact validation errors"
+            )
+        if self.profile is not None and self.errors:
+            raise ValueError("valid application profile loads cannot include validation errors")
+        if self.profile is not None and self.application_id != self.profile.application_id:
+            raise ValueError("profile load application identity must match the loaded profile")
+        return self
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def valid(self) -> bool:
+        return self.profile is not None
+
+
+class EnrollmentCheck(KubeCouncilModel):
+    code: EnrollmentCheckCode
+    passed: bool
+    message: str = Field(min_length=1)
+    workload: WorkloadReference | None = None
+
+
+class EnrollmentReadiness(KubeCouncilModel):
+    application_id: str = Field(min_length=1)
+    profile_version: str = Field(min_length=1)
+    ready: bool
+    checks: tuple[EnrollmentCheck, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def is_truthful(self) -> "EnrollmentReadiness":
+        if self.ready != all(check.passed for check in self.checks):
+            raise ValueError("enrollment readiness must equal the result of all checks")
+        return self
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def failed_checks(self) -> tuple[EnrollmentCheck, ...]:
+        return tuple(check for check in self.checks if not check.passed)
+
+
+class NamespaceEnrollmentState(KubeCouncilModel):
+    namespace: str = Field(min_length=1)
+    exists: bool
+    labels: dict[str, str] = Field(default_factory=dict)
+
+
+class WorkloadEnrollmentState(KubeCouncilModel):
+    reference: WorkloadReference
+    exists: bool
+    labels: dict[str, str] = Field(default_factory=dict)
+
+
+class RoleBindingEnrollmentState(KubeCouncilModel):
+    namespace: str = Field(min_length=1)
+    subject: str = Field(min_length=1)
+    role: str = Field(min_length=1)
+    exists: bool
+
+
+class EnrollmentSnapshot(KubeCouncilModel):
+    """Typed, read-only prerequisite facts supplied by a Kubernetes adapter."""
+
+    namespaces: tuple[NamespaceEnrollmentState, ...] = ()
+    workloads: tuple[WorkloadEnrollmentState, ...] = ()
+    role_bindings: tuple[RoleBindingEnrollmentState, ...] = ()
+    admission_policy_binding: bool = False
+
+    @model_validator(mode="after")
+    def contains_unique_resources(self) -> "EnrollmentSnapshot":
+        namespace_names = [state.namespace for state in self.namespaces]
+        if len(namespace_names) != len(set(namespace_names)):
+            raise ValueError("enrollment snapshot namespaces must be unique")
+        references = [state.reference for state in self.workloads]
+        if len(references) != len(set(references)):
+            raise ValueError("enrollment snapshot workloads must be unique")
+        role_bindings = [
+            (state.namespace, state.subject, state.role) for state in self.role_bindings
+        ]
+        if len(role_bindings) != len(set(role_bindings)):
+            raise ValueError("enrollment snapshot role bindings must be unique")
+        return self
+
+
+class ApplicationHealth(KubeCouncilModel):
+    status: Literal["unknown"] = "unknown"
+    message: str = "Health evidence has not been connected yet."
+
+
+class ManagedApplication(KubeCouncilModel):
+    application_profile: ApplicationProfile | None = None
+    profile_load: ApplicationProfileLoadResult
+    enrollment: EnrollmentReadiness
+    health: ApplicationHealth = Field(default_factory=ApplicationHealth)
+    incident_count: int = Field(ge=0)
 
 
 class AlertSignal(KubeCouncilModel):
@@ -613,3 +799,15 @@ class IncidentStore(Protocol):
         expected_version: int,
         replacement: Incident,
     ) -> InvestigationRecord: ...
+
+
+class ApplicationProfileProvider(Protocol):
+    """Loads profile documents without leaking ConfigMap SDK values into the domain."""
+
+    def list_profiles(self) -> tuple[ApplicationProfileLoadResult, ...]: ...
+
+
+class EnrollmentProvider(Protocol):
+    """Reads only the Kubernetes prerequisites required to assess Enrollment."""
+
+    def inspect(self, profile: ApplicationProfile) -> EnrollmentSnapshot: ...

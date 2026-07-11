@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import "./App.css";
 
@@ -27,6 +27,25 @@ type IncidentRecord = {
 };
 
 type ApiError = { detail?: { code?: string; message?: string } };
+
+type EnrollmentCheck = { code: string; message: string; passed: boolean };
+
+type ManagedApplication = {
+  application_profile: {
+    application_id: string;
+    display_name: string;
+    namespace: string;
+    workloads: Array<{ reference: { name: string }; executable: boolean; protected_dependency: boolean }>;
+  } | null;
+  profile_load: {
+    application_id: string | null;
+    valid: boolean;
+    errors: Array<{ location: string; message: string }>;
+  };
+  enrollment: { ready: boolean; failed_checks: EnrollmentCheck[] };
+  health: { status: string; message: string };
+  incident_count: number;
+};
 
 class ApiRequestError extends Error {}
 
@@ -64,6 +83,25 @@ export function App() {
   const [record, setRecord] = useState<IncidentRecord | null>(null);
   const [message, setMessage] = useState("Open a local fake incident to inspect the incident-response record.");
   const [opening, setOpening] = useState(false);
+  const [applications, setApplications] = useState<ManagedApplication[]>([]);
+  const [applicationsMessage, setApplicationsMessage] = useState("Loading Enrollment readiness.");
+
+  useEffect(() => {
+    void loadManagedApplications();
+  }, []);
+
+  async function loadManagedApplications(): Promise<void> {
+    try {
+      const loaded = await requestJson<ManagedApplication[]>("/api/applications");
+      setApplications(loaded);
+      setApplicationsMessage(loaded.length ? "Enrollment readiness is current." : "No Application Profiles loaded.");
+    } catch (error) {
+      console.error("Managed Application readiness load failed", error);
+      setApplicationsMessage(
+        error instanceof ApiRequestError ? error.message : "Unable to load Managed Applications.",
+      );
+    }
+  }
 
   async function openIncident(): Promise<void> {
     setOpening(true);
@@ -91,9 +129,11 @@ export function App() {
     <main className="incident-shell">
       <header className="incident-masthead">
         <p className="eyebrow">KubeCouncil / Incident response</p>
-        <h1>Investigation desk</h1>
-        <p className="lede">A narrow, auditable path from an alert signal to an incident record.</p>
+        <h1>Operations desk</h1>
+        <p className="lede">Enrollment readiness comes before the narrow, auditable incident path.</p>
       </header>
+
+      <ManagedApplications applications={applications} message={applicationsMessage} />
 
       <section className="incident-control" aria-live="polite">
         <div>
@@ -107,6 +147,71 @@ export function App() {
 
       {record ? <IncidentDetail record={record} /> : <EmptyIncidentState />}
     </main>
+  );
+}
+
+function ManagedApplications({ applications, message }: { applications: ManagedApplication[]; message: string }) {
+  return (
+    <section className="managed-applications" aria-live="polite">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Managed Applications</p>
+          <h2>Enrollment readiness</h2>
+        </div>
+        <p>{message}</p>
+      </div>
+      <div className="application-list">
+        {applications.map((application) => {
+          const profile = application.application_profile;
+          const name = profile
+            ? profile.display_name
+            : application.profile_load.valid
+              ? application.profile_load.application_id ?? "Managed Application"
+              : "Invalid Application Profile";
+          return (
+            <article className="application-card" key={application.profile_load.application_id ?? name}>
+              <div className="application-title">
+                <div>
+                  <h3>{name}</h3>
+                  <p>{profile ? `Namespace: ${profile.namespace}` : "Profile could not be loaded."}</p>
+                </div>
+                <span className={application.enrollment.ready ? "readiness ready" : "readiness blocked"}>
+                  {application.enrollment.ready ? "Enrolled" : "Not ready"}
+                </span>
+              </div>
+              <p className="health-placeholder">Health: {titleCase(application.health.status)} · {application.health.message}</p>
+              <p className="incident-history">Incident history: {application.incident_count}</p>
+              {profile ? (
+                <ul className="plain-list workload-list">
+                  {profile.workloads.map((workload) => (
+                    <li key={workload.reference.name}>
+                      {workload.reference.name}
+                      {workload.protected_dependency ? " · protected dependency · observe only" : " · Managed Workload"}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {!profile ? (
+                <ul className="profile-errors">
+                  {application.profile_load.errors.map((error) => (
+                    <li key={`${error.location}-${error.message}`}>
+                      {error.location}: {error.message}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {!application.enrollment.ready ? (
+                <ul className="readiness-failures">
+                  {application.enrollment.failed_checks.map((check) => (
+                    <li key={`${check.code}-${check.message}`}>{check.message}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
