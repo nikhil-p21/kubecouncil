@@ -13,9 +13,11 @@ from app.domain.incidents import (
     ApprovalReview,
     AuditEvent,
     IncidentStore,
+    InterventionPublisher,
     InvestigationRecord,
     PolicyKubernetesProvider,
 )
+from app.services.intervention_queue import build_intervention_request
 
 
 class ApprovalError(RuntimeError):
@@ -29,10 +31,12 @@ class ApprovalService:
         *,
         review_ttl: timedelta = timedelta(minutes=5),
         clock: Callable[[], datetime] | None = None,
+        publisher: InterventionPublisher | None = None,
     ) -> None:
         self._kubernetes = kubernetes
         self._review_ttl = review_ttl
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._publisher = publisher
 
     def review(
         self,
@@ -132,7 +136,7 @@ class ApprovalService:
             },
         )
         try:
-            return store.record_approval_decision(
+            recorded = store.record_approval_decision(
                 incident_id,
                 reviewed_binding.incident_version,
                 approval,
@@ -140,6 +144,26 @@ class ApprovalService:
             )
         except ValueError as error:
             raise ApprovalError(str(error)) from error
+        if decision is ApprovalDecision.APPROVED and self._publisher is not None:
+            request = build_intervention_request(recorded, approval, requested_at=now)
+            self._publisher.publish(request)
+            recorded = store.append_audit_event(
+                incident_id,
+                AuditEvent(
+                    event_id=f"audit-{uuid4().hex}",
+                    incident_id=incident_id,
+                    event_type="intervention_requested",
+                    occurred_at=now,
+                    actor="investigator",
+                    details={
+                        "request_id": request.request_id,
+                        "approval_id": request.approval_id,
+                        "idempotency_key": request.idempotency_key,
+                        "payload_hash": request.payload_hash,
+                    },
+                ),
+            )
+        return recorded
 
     @staticmethod
     def _require_responder(identity: OperatorIdentity) -> None:

@@ -988,6 +988,26 @@ class Approval(KubeCouncilModel):
         return self
 
 
+class InterventionRequest(KubeCouncilModel):
+    """Immutable, hash-bound message crossing the Investigator/Executor boundary."""
+
+    request_id: str = Field(min_length=1)
+    incident_id: str = Field(min_length=1)
+    proposal_id: str = Field(min_length=1)
+    approval_id: str = Field(min_length=1)
+    target: WorkloadReference
+    patch: DeploymentPatch
+    requested_at: datetime
+    idempotency_key: str = Field(min_length=8)
+    payload_hash: str = Field(min_length=8)
+
+    @model_validator(mode="after")
+    def patch_targets_one_workload(self) -> "InterventionRequest":
+        if self.patch.target != self.target:
+            raise ValueError("Intervention request patch must target its declared workload")
+        return self
+
+
 class Intervention(KubeCouncilModel):
     intervention_id: str = Field(min_length=1)
     incident_id: str = Field(min_length=1)
@@ -997,6 +1017,24 @@ class Intervention(KubeCouncilModel):
     state: InterventionState
     requested_at: datetime
     idempotency_key: str = Field(min_length=8)
+
+
+class WorkloadLease(KubeCouncilModel):
+    """Expiring ownership claim for exactly one Managed Workload."""
+
+    lease_key: str = Field(min_length=1)
+    target: WorkloadReference
+    intervention_id: str = Field(min_length=1)
+    owner: str = Field(min_length=1)
+    token: str = Field(min_length=8)
+    acquired_at: datetime
+    expires_at: datetime
+
+    @model_validator(mode="after")
+    def expires_after_acquisition(self) -> "WorkloadLease":
+        if self.expires_at <= self.acquired_at:
+            raise ValueError("workload lease expiry must follow acquisition")
+        return self
 
 
 class RecoveryAssessment(KubeCouncilModel):
@@ -1182,6 +1220,21 @@ class IncidentStore(Protocol):
         event: AuditEvent,
     ) -> InvestigationRecord: ...
 
+    def record_intervention(
+        self,
+        incident_id: str,
+        expected_version: int,
+        intervention: Intervention,
+        event: AuditEvent,
+    ) -> InvestigationRecord: ...
+
+    def update_intervention(
+        self,
+        incident_id: str,
+        intervention: Intervention,
+        event: AuditEvent,
+    ) -> InvestigationRecord: ...
+
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord: ...
 
     def timeline(self, incident_id: str, *, after: int = 0) -> tuple[AuditEvent, ...]: ...
@@ -1237,6 +1290,35 @@ class PolicyKubernetesProvider(Protocol):
     def inspect_deployment(self, target: WorkloadReference) -> DeploymentPolicyState | None: ...
 
     def dry_run_deployment_patch(self, patch: DeploymentPatch) -> DryRunResult: ...
+
+
+class InterventionPublisher(Protocol):
+    """Durable queue publisher available to the Investigator only."""
+
+    def publish(self, request: InterventionRequest) -> None: ...
+
+
+class ExecutorKubernetesProvider(PolicyKubernetesProvider, Protocol):
+    """Narrow mutation boundary available only to the deterministic Executor."""
+
+    def apply_deployment_patch(self, patch: DeploymentPatch) -> DeploymentPolicyState: ...
+
+
+class WorkloadLeaseStore(Protocol):
+    """Serializes Interventions per Managed Workload with expiring leases."""
+
+    def acquire(
+        self,
+        target: WorkloadReference,
+        *,
+        intervention_id: str,
+        owner: str,
+        now: datetime,
+    ) -> WorkloadLease | None: ...
+
+    def renew(self, lease: WorkloadLease, *, now: datetime) -> WorkloadLease: ...
+
+    def release(self, lease: WorkloadLease) -> None: ...
 
 
 class EvidenceRedactor(Protocol):

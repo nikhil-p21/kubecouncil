@@ -27,6 +27,7 @@ from app.services.identity import (
     LocalIdentityProvider,
     UnavailableIdentityProvider,
 )
+from app.services.intervention_queue import InMemoryInterventionQueue
 from app.services.proposal_policy import (
     DeterministicProposalPolicy,
     FakePolicyKubernetesProvider,
@@ -59,7 +60,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         policy_kubernetes,
         application.state.enrollment_provider,
     )
-    application.state.approval_service = ApprovalService(policy_kubernetes)
+    application.state.intervention_publisher = InMemoryInterventionQueue()
+    application.state.approval_service = ApprovalService(
+        policy_kubernetes,
+        publisher=application.state.intervention_publisher,
+    )
     runtime_mode = os.getenv("KUBECOUNCIL_RUNTIME_MODE", "deployed")
     if runtime_mode == "development":
         principal = os.getenv("KUBECOUNCIL_LOCAL_PRINCIPAL", "developer@example.com")

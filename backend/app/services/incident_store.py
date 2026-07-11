@@ -17,6 +17,7 @@ from app.domain.incidents import (
     EvidenceQuery,
     EvidenceRetrievalFailure,
     Incident,
+    Intervention,
     InvestigationRecord,
     ModelInvocation,
     PolicyDecision,
@@ -247,6 +248,31 @@ class FirestoreIncidentStore:
             lambda store: store.record_approval_decision(
                 incident_id, expected_version, approval, event
             ),
+        )
+
+    def record_intervention(
+        self,
+        incident_id: str,
+        expected_version: int,
+        intervention: Intervention,
+        event: AuditEvent,
+    ) -> InvestigationRecord:
+        return self._mutate(
+            incident_id,
+            lambda store: store.record_intervention(
+                incident_id, expected_version, intervention, event
+            ),
+        )
+
+    def update_intervention(
+        self,
+        incident_id: str,
+        intervention: Intervention,
+        event: AuditEvent,
+    ) -> InvestigationRecord:
+        return self._mutate(
+            incident_id,
+            lambda store: store.update_intervention(incident_id, intervention, event),
         )
 
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord:

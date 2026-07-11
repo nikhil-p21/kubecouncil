@@ -14,6 +14,7 @@ from app.domain.incidents import (
     ApplicationProfile,
     ApplicationProfileLoadResult,
     Approval,
+    ApprovalDecision,
     AuditEvent,
     CoordinatorOutput,
     CriticalJourney,
@@ -31,6 +32,9 @@ from app.domain.incidents import (
     Incident,
     IncidentLifecycle,
     IncidentStore,
+    Intervention,
+    InterventionOutcome,
+    InterventionState,
     InvestigationRecord,
     ManagedWorkload,
     ModelInvocation,
@@ -606,6 +610,118 @@ class InMemoryIncidentStore(IncidentStore):
                     "incident": updated_incident,
                     "approvals": (approval,),
                     "audit_events": (*record.audit_events, stored_event),
+                }
+            )
+            return self._replace(InvestigationRecord.model_validate(updated.model_dump()))
+
+    def record_intervention(
+        self,
+        incident_id: str,
+        expected_version: int,
+        intervention: Intervention,
+        event: AuditEvent,
+    ) -> InvestigationRecord:
+        """Atomically claim one idempotent Intervention after approved authority."""
+
+        with self._lock:
+            record = self._required_record(incident_id)
+            if record.incident.version != expected_version:
+                raise ValueError("intervention request is stale")
+            if intervention.incident_id != incident_id or event.incident_id != incident_id:
+                raise ValueError("Intervention and audit event must belong to the Incident")
+            if intervention.state is not InterventionState.RUNNING:
+                raise ValueError("a claimed Intervention must start in running state")
+            approval = next(
+                (
+                    item
+                    for item in record.approvals
+                    if item.approval_id == intervention.approval_id
+                ),
+                None,
+            )
+            if approval is None or approval.decision is not ApprovalDecision.APPROVED:
+                raise ValueError("Intervention requires one recorded Approval")
+            if any(
+                item.idempotency_key == intervention.idempotency_key
+                for item in record.interventions
+            ):
+                raise ValueError("intervention request was already claimed")
+            if any(item.state is InterventionState.RUNNING for item in record.interventions):
+                raise ValueError("Incident already has an active Intervention")
+            next_cursor = record.audit_events[-1].cursor + 1 if record.audit_events else 1
+            updated_incident = transition_incident(
+                record.incident,
+                lifecycle=IncidentLifecycle.MITIGATING,
+            ).model_copy(update={"version": record.incident.version + 1})
+            updated = record.model_copy(
+                update={
+                    "incident": updated_incident,
+                    "interventions": (*record.interventions, intervention),
+                    "audit_events": (
+                        *record.audit_events,
+                        event.model_copy(update={"cursor": next_cursor}),
+                    ),
+                }
+            )
+            return self._replace(InvestigationRecord.model_validate(updated.model_dump()))
+
+    def update_intervention(
+        self,
+        incident_id: str,
+        intervention: Intervention,
+        event: AuditEvent,
+    ) -> InvestigationRecord:
+        """Replace only the state of a claimed Intervention and append its audit event."""
+
+        with self._lock:
+            record = self._required_record(incident_id)
+            current = next(
+                (
+                    item
+                    for item in record.interventions
+                    if item.intervention_id == intervention.intervention_id
+                ),
+                None,
+            )
+            if current is None:
+                raise ValueError("Intervention has not been claimed")
+            if event.incident_id != incident_id:
+                raise ValueError("Intervention audit event must belong to the Incident")
+            if any(item.event_id == event.event_id for item in record.audit_events):
+                raise ValueError("audit event already exists and is append-only")
+            if current.state is not InterventionState.RUNNING:
+                raise ValueError("completed Interventions are immutable")
+            if intervention.model_copy(update={"state": current.state}) != current:
+                raise ValueError("only Intervention state may change after claim")
+            if intervention.state is InterventionState.RUNNING:
+                raise ValueError("Intervention update must be terminal")
+            next_cursor = record.audit_events[-1].cursor + 1 if record.audit_events else 1
+            interventions = tuple(
+                intervention if item.intervention_id == intervention.intervention_id else item
+                for item in record.interventions
+            )
+            lifecycle = record.incident.lifecycle
+            outcome = record.incident.intervention_outcome
+            if intervention.state is InterventionState.SUCCEEDED:
+                lifecycle = IncidentLifecycle.MONITORING
+                outcome = InterventionOutcome.MONITORING
+            elif intervention.state is InterventionState.FAILED:
+                outcome = InterventionOutcome.FAILED
+            elif intervention.state is InterventionState.SAFE_HALTED:
+                outcome = InterventionOutcome.SAFE_HALTED
+            updated_incident = transition_incident(
+                record.incident,
+                lifecycle=lifecycle,
+                intervention_outcome=outcome,
+            ).model_copy(update={"version": record.incident.version + 1})
+            updated = record.model_copy(
+                update={
+                    "incident": updated_incident,
+                    "interventions": interventions,
+                    "audit_events": (
+                        *record.audit_events,
+                        event.model_copy(update={"cursor": next_cursor}),
+                    ),
                 }
             )
             return self._replace(InvestigationRecord.model_validate(updated.model_dump()))
