@@ -79,6 +79,7 @@ type IncidentRecord = {
     citations: Array<{ evidence_id: string; observation: string }>;
   }>;
   proposal: {
+    proposal_id: string;
     action: {
       action_type: "rollback_deployment" | "scale_deployment" | "restart_deployment";
       target: { namespace: string; name: string };
@@ -86,9 +87,22 @@ type IncidentRecord = {
       replicas?: number;
     };
     expected_impact: string;
+    recovery_criteria: {
+      critical_journey_name?: string;
+      required_stable_windows?: number;
+      stabilization_window_seconds?: number;
+    };
     rollback_strategy: string;
+    known_risks: string[];
   } | null;
   manual_guidance: { reason: string; guidance: string; outcome: Outcome } | null;
+  policy_decision: {
+    status: "passed" | "rejected" | "dry_run_failed";
+    checks: Array<{ code: string; passed: boolean; message: string }>;
+    dry_run_diff: string | null;
+    rejection_reason: string | null;
+    workload_resource_version: string | null;
+  } | null;
   audit_events: Array<{
     event_id: string;
     event_type: string;
@@ -559,14 +573,68 @@ function CouncilOutcome({ record }: { record: IncidentRecord }) {
         : action.action_type === "scale_deployment"
           ? `${action.replicas} replicas`
           : "controlled rollout";
+    const policy = record.policy_decision;
+    const policyPassed = policy?.status === "passed";
+    const recovery = proposal.recovery_criteria;
     return (
-      <section className="council-outcome">
-        <p className="eyebrow">Proposal Ready</p>
+      <section className={`council-outcome ${policyPassed ? "" : "policy-blocked"}`}>
+        <p className="eyebrow">
+          {policyPassed
+            ? "Proposal Ready · Policy Passed"
+            : policy
+              ? "Manual Guidance · Policy Rejected"
+              : "Proposal Pending Deterministic Policy"}
+        </p>
         <h3>
           {titleCase(action.action_type)} · {action.target.name} · {actionDetail}
         </h3>
-        <p>{proposal.expected_impact}</p>
-        <small>Failure strategy: {proposal.rollback_strategy}</small>
+        <dl className="proposal-review">
+          <div>
+            <dt>Expected impact</dt>
+            <dd>{proposal.expected_impact}</dd>
+          </div>
+          <div>
+            <dt>Recovery Criteria</dt>
+            <dd>
+              {recovery.critical_journey_name
+                ? `${titleCase(recovery.critical_journey_name)} · ${recovery.required_stable_windows} consecutive ${recovery.stabilization_window_seconds}-second windows`
+                : "Use the Application Profile recovery contract."}
+            </dd>
+          </div>
+          <div>
+            <dt>Known risks</dt>
+            <dd>{proposal.known_risks.length ? proposal.known_risks.join(" ") : "No additional risks declared."}</dd>
+          </div>
+          <div>
+            <dt>Rollback behavior</dt>
+            <dd>{proposal.rollback_strategy}</dd>
+          </div>
+        </dl>
+        {policy ? (
+          <div className="policy-result">
+            <h4>Deterministic Policy Checks</h4>
+            <ul className="plain-list compact-list">
+              {policy.checks.map((check) => (
+                <li className={check.passed ? "policy-pass" : "policy-fail"} key={check.code}>
+                  {check.passed ? "Pass" : "Reject"} · {titleCase(check.code)} · {check.message}
+                </li>
+              ))}
+            </ul>
+            {policy.dry_run_diff ? (
+              <p className="dry-run-diff">
+                <strong>Server dry-run diff:</strong> {policy.dry_run_diff}
+              </p>
+            ) : null}
+            {policy.rejection_reason ? (
+              <p className="policy-rejection">Not executable: {policy.rejection_reason}</p>
+            ) : null}
+            {policy.workload_resource_version ? (
+              <small>Bound workload resource version: {policy.workload_resource_version}</small>
+            ) : null}
+          </div>
+        ) : (
+          <p className="policy-rejection">Not approvable until deterministic policy and dry-run complete.</p>
+        )}
       </section>
     );
   }

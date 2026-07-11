@@ -33,6 +33,8 @@ from app.domain.incidents import (
     ModelInvocation,
     NamespaceEnrollmentState,
     ObservabilityLink,
+    PolicyDecision,
+    PolicyStatus,
     ProfileValidationIssue,
     RawEvidenceObservation,
     RecoveryCriteria,
@@ -533,9 +535,7 @@ class InMemoryIncidentStore(IncidentStore):
             raise ValueError("Root Cause Hypotheses must belong to the requested incident")
         updated_incident = transition_incident(
             record.incident,
-            lifecycle=IncidentLifecycle.AWAITING_APPROVAL
-            if output.proposal is not None
-            else IncidentLifecycle.INVESTIGATING,
+            lifecycle=IncidentLifecycle.INVESTIGATING,
             investigation_outcome=output.outcome,
         ).model_copy(update={"version": record.incident.version + 1})
         updated = record.model_copy(
@@ -545,6 +545,29 @@ class InMemoryIncidentStore(IncidentStore):
                 "proposal": output.proposal,
                 "manual_guidance": output.manual_guidance,
             }
+        )
+        return self._replace(InvestigationRecord.model_validate(updated.model_dump()))
+
+    def record_policy_decision(
+        self, incident_id: str, decision: PolicyDecision
+    ) -> InvestigationRecord:
+        record = self._required_record(incident_id)
+        if record.proposal is None:
+            raise ValueError("policy decisions require a remediation proposal")
+        if record.policy_decision is not None:
+            raise ValueError("policy decision is already recorded and cannot be overridden")
+        if decision.incident_id != incident_id:
+            raise ValueError("policy decision must belong to the requested incident")
+        if decision.proposal_id != record.proposal.proposal_id:
+            raise ValueError("policy decision must reference the recorded proposal")
+        updated_incident = record.incident
+        if decision.status is PolicyStatus.PASSED:
+            updated_incident = transition_incident(
+                record.incident,
+                lifecycle=IncidentLifecycle.AWAITING_APPROVAL,
+            ).model_copy(update={"version": record.incident.version + 1})
+        updated = record.model_copy(
+            update={"incident": updated_incident, "policy_decision": decision}
         )
         return self._replace(InvestigationRecord.model_validate(updated.model_dump()))
 

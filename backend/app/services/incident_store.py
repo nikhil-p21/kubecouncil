@@ -18,6 +18,7 @@ from app.domain.incidents import (
     Incident,
     InvestigationRecord,
     ModelInvocation,
+    PolicyDecision,
     SpecialistFinding,
 )
 
@@ -224,6 +225,13 @@ class FirestoreIncidentStore:
     ) -> InvestigationRecord:
         return self._mutate(
             incident_id, lambda store: store.complete_investigation(incident_id, output)
+        )
+
+    def record_policy_decision(
+        self, incident_id: str, decision: PolicyDecision
+    ) -> InvestigationRecord:
+        return self._mutate(
+            incident_id, lambda store: store.record_policy_decision(incident_id, decision)
         )
 
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord:

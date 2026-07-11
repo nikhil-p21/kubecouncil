@@ -88,6 +88,23 @@ class PolicyStatus(StrEnum):
     DRY_RUN_FAILED = "dry_run_failed"
 
 
+class PolicyCheckCode(StrEnum):
+    PROPOSAL_SCOPED = "proposal_scoped"
+    EVIDENCE_CURRENT = "evidence_current"
+    ENROLLMENT_READY = "enrollment_ready"
+    TARGET_ENROLLED = "target_enrolled"
+    TARGET_EXECUTABLE = "target_executable"
+    ACTION_ALLOWED = "action_allowed"
+    LIVE_STATE_AVAILABLE = "live_state_available"
+    NO_ACTIVE_INTERVENTION = "no_active_intervention"
+    REVISION_AVAILABLE = "revision_available"
+    RESTORATION_SAFE = "restoration_safe"
+    REPLICA_BOUNDS = "replica_bounds"
+    REPLICA_QUOTA = "replica_quota"
+    PATCH_SHAPE = "patch_shape"
+    SERVER_DRY_RUN = "server_dry_run"
+
+
 class ApprovalDecision(StrEnum):
     APPROVED = "approved"
     REJECTED = "rejected"
@@ -788,6 +805,7 @@ class RemediationProposal(KubeCouncilModel):
     recovery_criteria: RecoveryCriteria
     rollback_strategy: str = Field(min_length=1)
     evidence_hash: str = Field(min_length=8)
+    known_risks: tuple[str, ...] = ()
 
 
 class ManualGuidance(KubeCouncilModel):
@@ -850,12 +868,74 @@ class CoordinatorOutput(KubeCouncilModel):
         return self
 
 
+class DeploymentRevision(KubeCouncilModel):
+    revision: int = Field(ge=1)
+    pod_template: dict[str, object]
+    restorable: bool = True
+    implicated: bool = False
+
+
+class DeploymentPolicyState(KubeCouncilModel):
+    target: WorkloadReference
+    resource_version: str = Field(min_length=1)
+    generation: int = Field(ge=1)
+    replicas: int = Field(ge=0)
+    current_revision: int = Field(ge=1)
+    available_revisions: tuple[DeploymentRevision, ...] = Field(min_length=1)
+    active_intervention: bool = False
+    replica_quota_headroom: int = Field(ge=0)
+
+
+class DeploymentPatch(KubeCouncilModel):
+    action_type: Literal["rollback_deployment", "scale_deployment", "restart_deployment"]
+    target: WorkloadReference
+    resource_version: str = Field(min_length=1)
+    body: dict[str, object]
+
+
+class DryRunResult(KubeCouncilModel):
+    accepted: bool
+    diff: str | None = None
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def has_one_outcome(self) -> "DryRunResult":
+        if self.accepted and (self.diff is None or self.error is not None):
+            raise ValueError("accepted dry-run results require only a diff")
+        if not self.accepted and (self.error is None or self.diff is not None):
+            raise ValueError("rejected dry-run results require only an error")
+        return self
+
+
+class PolicyCheck(KubeCouncilModel):
+    code: PolicyCheckCode
+    passed: bool
+    message: str = Field(min_length=1)
+
+
 class PolicyDecision(KubeCouncilModel):
     incident_id: str = Field(min_length=1)
     proposal_id: str = Field(min_length=1)
     status: PolicyStatus
-    checks: tuple[str, ...] = Field(min_length=1)
+    checks: tuple[PolicyCheck, ...] = Field(min_length=1)
+    evaluated_at: datetime
+    workload_resource_version: str | None = None
+    patch: DeploymentPatch | None = None
     dry_run_diff: str | None = None
+    rejection_reason: str | None = None
+
+    @model_validator(mode="after")
+    def matches_status(self) -> "PolicyDecision":
+        failed = tuple(check for check in self.checks if not check.passed)
+        if self.status is PolicyStatus.PASSED:
+            if failed or self.patch is None or self.dry_run_diff is None:
+                raise ValueError("passed policy requires all checks, a patch, and a dry-run diff")
+            if self.rejection_reason is not None:
+                raise ValueError("passed policy cannot include a rejection reason")
+        else:
+            if not failed or self.rejection_reason is None or self.dry_run_diff is not None:
+                raise ValueError("rejected policy requires failed checks and a rejection reason")
+        return self
 
 
 class Approval(KubeCouncilModel):
@@ -1002,6 +1082,11 @@ class InvestigationRecord(KubeCouncilModel):
             approval.proposal_id != self.proposal.proposal_id for approval in self.approvals
         ):
             raise ValueError("approvals must reference the record proposal")
+        if self.approvals and (
+            self.policy_decision is None
+            or self.policy_decision.status is not PolicyStatus.PASSED
+        ):
+            raise ValueError("Approval cannot override a missing or rejected policy decision")
         approval_ids = {approval.approval_id for approval in self.approvals}
         intervention_ids = {intervention.intervention_id for intervention in self.interventions}
         if self.proposal is None and self.interventions:
@@ -1058,6 +1143,10 @@ class IncidentStore(Protocol):
         self, incident_id: str, output: CoordinatorOutput
     ) -> InvestigationRecord: ...
 
+    def record_policy_decision(
+        self, incident_id: str, decision: PolicyDecision
+    ) -> InvestigationRecord: ...
+
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord: ...
 
     def timeline(self, incident_id: str, *, after: int = 0) -> tuple[AuditEvent, ...]: ...
@@ -1105,6 +1194,14 @@ class IncidentCouncilModel(Protocol):
     async def analyze_specialist(self, request: SpecialistRequest) -> ModelResponse: ...
 
     async def coordinate(self, request: CoordinatorRequest) -> ModelResponse: ...
+
+
+class PolicyKubernetesProvider(Protocol):
+    """Narrow live-state and server-side dry-run boundary used by deterministic policy."""
+
+    def inspect_deployment(self, target: WorkloadReference) -> DeploymentPolicyState | None: ...
+
+    def dry_run_deployment_patch(self, patch: DeploymentPatch) -> DryRunResult: ...
 
 
 class EvidenceRedactor(Protocol):

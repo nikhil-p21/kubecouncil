@@ -157,6 +157,9 @@ class FakeIncidentCouncilModel:
                     "recovery is ambiguous."
                 ),
                 "evidence_hash": request.evidence_hash,
+                "known_risks": [
+                    "A rollback starts a new rollout and may temporarily reduce available capacity."
+                ],
             },
             "manual_guidance": None,
         }

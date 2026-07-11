@@ -18,6 +18,10 @@ from app.observability import RequestIdMiddleware, configure_logging
 from app.services.council import BoundedIncidentCouncil, FakeIncidentCouncilModel
 from app.services.evidence import DeterministicEvidenceRedactor
 from app.services.evidence_gateway import EvidenceQueryGateway, FakeEvidenceQueryAdapter
+from app.services.proposal_policy import (
+    DeterministicProposalPolicy,
+    FakePolicyKubernetesProvider,
+)
 
 
 @asynccontextmanager
@@ -40,6 +44,10 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.incident_council = BoundedIncidentCouncil(
         FakeIncidentCouncilModel(),
         evidence_gateway=application.state.evidence_query_gateway,
+    )
+    application.state.proposal_policy = DeterministicProposalPolicy(
+        FakePolicyKubernetesProvider.ready(),
+        application.state.enrollment_provider,
     )
     yield
 

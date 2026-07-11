@@ -159,6 +159,15 @@ describe("App", () => {
     expect(screenText()).toContain("lower memory limit caused OOM terminations");
     expect(screenText()).toContain("Proposal Ready");
     expect(screenText()).toContain("Rollback Deployment · recommendationservice · revision 7");
+    expect(screenText()).toContain("Policy Passed");
+    expect(screenText()).toContain("Pass · Target Executable");
+    expect(screenText()).toContain(
+      "Server dry-run diff: Deployment/recommendationservice: revision 8 -> 7",
+    );
+    expect(screenText()).toContain("Recovery Criteria");
+    expect(screenText()).toContain("Checkout · 2 consecutive 60-second windows");
+    expect(screenText()).toContain("Known risks");
+    expect(screenText()).toContain("Rollback behavior");
   });
 });
 
@@ -348,9 +357,31 @@ function investigatedIncidentRecord() {
         revision: 7,
       },
       expected_impact: "Restore the known healthy memory configuration.",
-      recovery_criteria: {},
+      recovery_criteria: {
+        critical_journey_name: "checkout",
+        required_stable_windows: 2,
+        stabilization_window_seconds: 60,
+      },
       rollback_strategy: "Enter Safe Halt if recovery is ambiguous.",
       evidence_hash: "evidence-hash",
+      known_risks: ["A rollout may temporarily reduce available capacity."],
+    },
+    policy_decision: {
+      incident_id: "inc-123",
+      proposal_id: "proposal-1",
+      status: "passed",
+      checks: [
+        {
+          code: "target_executable",
+          passed: true,
+          message: "Target is an executable Managed Workload.",
+        },
+      ],
+      evaluated_at: "2026-07-11T00:00:02Z",
+      workload_resource_version: "rv-8",
+      patch: {},
+      dry_run_diff: "Deployment/recommendationservice: revision 8 -> 7",
+      rejection_reason: null,
     },
   };
 }

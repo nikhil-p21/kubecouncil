@@ -463,9 +463,64 @@ h2 {
 }
 
 .council-outcome.safe-refusal,
-.council-outcome.inconclusive {
+.council-outcome.inconclusive,
+.council-outcome.policy-blocked {
   border-left-color: #c76723;
   background: #fff7f0;
+}
+
+.proposal-review {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 16px 0 0;
+}
+
+.proposal-review div {
+  border-top: 1px solid #c9ded2;
+  padding-top: 10px;
+}
+
+.proposal-review dt {
+  color: #64777c;
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.proposal-review dd {
+  margin: 5px 0 0;
+  color: #455960;
+  line-height: 1.45;
+}
+
+.policy-result {
+  margin-top: 20px;
+  border-top: 1px solid #c9ded2;
+  padding-top: 16px;
+}
+
+.policy-result h4 {
+  margin: 0;
+  color: #173943;
+}
+
+.policy-pass {
+  color: #17633c;
+}
+
+.policy-fail,
+.policy-rejection {
+  color: #8b4214;
+}
+
+.dry-run-diff {
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: #e3f1e8;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 760px) {
@@ -496,6 +551,10 @@ h2 {
   }
 
   .specialist-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .proposal-review {
     grid-template-columns: 1fr;
   }
 }

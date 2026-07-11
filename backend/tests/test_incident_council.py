@@ -3,8 +3,9 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
-from app.api.incidents import get_incident_council, get_incident_store
+from app.api.incidents import get_incident_council, get_incident_store, get_proposal_policy
 from app.domain.incident_fakes import (
+    FakeEnrollmentProvider,
     FakeEvidenceProvider,
     InMemoryIncidentStore,
     fake_application_profile,
@@ -27,6 +28,10 @@ from app.services.council import BoundedIncidentCouncil, FakeIncidentCouncilMode
 from app.services.evidence import DeterministicEvidenceRedactor, InitialEvidenceWindowCollector
 from app.services.evidence_gateway import EvidenceQueryGateway, FakeEvidenceQueryAdapter
 from app.services.incident_store import FirestoreIncidentStore, InMemoryDocumentDatabase
+from app.services.proposal_policy import (
+    DeterministicProposalPolicy,
+    FakePolicyKubernetesProvider,
+)
 
 
 def test_council_runs_all_specialists_concurrently_before_coordinating() -> None:
@@ -202,6 +207,10 @@ def test_incident_api_runs_the_council_and_returns_the_consolidated_record() -> 
     council = BoundedIncidentCouncil(FakeIncidentCouncilModel())
     app.dependency_overrides[get_incident_store] = lambda: store
     app.dependency_overrides[get_incident_council] = lambda: council
+    app.dependency_overrides[get_proposal_policy] = lambda: DeterministicProposalPolicy(
+        FakePolicyKubernetesProvider.ready(),
+        FakeEnrollmentProvider.ready_for(record.application_profile),
+    )
     client = TestClient(app)
     try:
         response = client.post(f"/api/incidents/{record.incident.incident_id}/investigate")
