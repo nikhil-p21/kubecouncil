@@ -8,11 +8,13 @@ from app.api.health import router as health_router
 from app.api.incidents import router as incidents_router
 from app.domain.incident_fakes import (
     FakeEnrollmentProvider,
+    FakeEvidenceProvider,
     InMemoryApplicationProfileProvider,
     InMemoryIncidentStore,
     fake_application_profile,
 )
 from app.observability import RequestIdMiddleware, configure_logging
+from app.services.evidence import DeterministicEvidenceRedactor
 
 
 @asynccontextmanager
@@ -21,6 +23,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     profile = fake_application_profile()
     application.state.application_profile_provider = InMemoryApplicationProfileProvider((profile,))
     application.state.enrollment_provider = FakeEnrollmentProvider.ready_for(profile)
+    application.state.evidence_provider = FakeEvidenceProvider()
+    application.state.evidence_redactor = DeterministicEvidenceRedactor()
     yield
 
 

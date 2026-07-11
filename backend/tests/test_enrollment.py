@@ -7,10 +7,13 @@ from pydantic import ValidationError
 from app.api.incidents import (
     get_application_profile_provider,
     get_enrollment_provider,
+    get_evidence_provider,
+    get_evidence_redactor,
     get_incident_store,
 )
 from app.domain.incident_fakes import (
     FakeEnrollmentProvider,
+    FakeEvidenceProvider,
     InMemoryApplicationProfileProvider,
     InMemoryIncidentStore,
     fake_application_profile,
@@ -18,6 +21,7 @@ from app.domain.incident_fakes import (
 from app.domain.incidents import ApplicationProfile, ManagedWorkload, WorkloadReference
 from app.main import app
 from app.services.enrollment import EnrollmentChecker, require_enrolled_target
+from app.services.evidence import DeterministicEvidenceRedactor
 
 
 def test_application_profile_rejects_a_dependency_outside_its_workloads() -> None:
@@ -174,6 +178,8 @@ def test_incident_api_rejects_invalid_profile_and_unmanaged_target() -> None:
     app.dependency_overrides[get_application_profile_provider] = lambda: invalid_profiles
     app.dependency_overrides[get_enrollment_provider] = FakeEnrollmentProvider.empty
     app.dependency_overrides[get_incident_store] = InMemoryIncidentStore
+    app.dependency_overrides[get_evidence_provider] = lambda: FakeEvidenceProvider()
+    app.dependency_overrides[get_evidence_redactor] = DeterministicEvidenceRedactor
     client = TestClient(app)
     try:
         invalid_profile = client.post("/api/incidents", json={"summary": "restart spike"})
@@ -184,13 +190,15 @@ def test_incident_api_rejects_invalid_profile_and_unmanaged_target() -> None:
     assert invalid_profile.json()["detail"]["code"] == "profile_invalid"
 
     profile = fake_application_profile()
-    app.dependency_overrides[get_application_profile_provider] = (
-        lambda: InMemoryApplicationProfileProvider((profile,))
+    app.dependency_overrides[get_application_profile_provider] = lambda: (
+        InMemoryApplicationProfileProvider((profile,))
     )
-    app.dependency_overrides[get_enrollment_provider] = (
-        lambda: FakeEnrollmentProvider.ready_for(profile)
+    app.dependency_overrides[get_enrollment_provider] = lambda: FakeEnrollmentProvider.ready_for(
+        profile
     )
     app.dependency_overrides[get_incident_store] = InMemoryIncidentStore
+    app.dependency_overrides[get_evidence_provider] = lambda: FakeEvidenceProvider()
+    app.dependency_overrides[get_evidence_redactor] = DeterministicEvidenceRedactor
     client = TestClient(app)
     try:
         unmanaged = client.post(

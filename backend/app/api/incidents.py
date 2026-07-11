@@ -13,12 +13,15 @@ from app.domain.incidents import (
     ApplicationProfileProvider,
     AuditEvent,
     EnrollmentProvider,
+    EvidenceProvider,
+    EvidenceRedactor,
     IncidentStore,
     InvestigationRecord,
     WorkloadReference,
 )
 from app.domain.models import KubeCouncilModel
 from app.services.enrollment import EnrollmentChecker, require_enrolled_target
+from app.services.evidence import InitialEvidenceWindowCollector
 
 router = APIRouter(prefix="/api/incidents", tags=["incidents"])
 
@@ -56,12 +59,28 @@ def get_enrollment_provider(request: Request) -> EnrollmentProvider:
     return cast(EnrollmentProvider, provider)
 
 
+def get_evidence_provider(request: Request) -> EvidenceProvider:
+    provider = getattr(request.app.state, "evidence_provider", None)
+    if not callable(getattr(provider, "collect_initial", None)):
+        raise RuntimeError("evidence provider is unavailable")
+    return cast(EvidenceProvider, provider)
+
+
+def get_evidence_redactor(request: Request) -> EvidenceRedactor:
+    redactor = getattr(request.app.state, "evidence_redactor", None)
+    if not callable(getattr(redactor, "redact", None)):
+        raise RuntimeError("evidence redactor is unavailable")
+    return cast(EvidenceRedactor, redactor)
+
+
 @router.post("", response_model=InvestigationRecord, status_code=status.HTTP_201_CREATED)
 def open_incident(
     request: OpenIncidentRequest,
     store: Annotated[IncidentStore, Depends(get_incident_store)],
     profiles: Annotated[ApplicationProfileProvider, Depends(get_application_profile_provider)],
     enrollment_provider: Annotated[EnrollmentProvider, Depends(get_enrollment_provider)],
+    evidence_provider: Annotated[EvidenceProvider, Depends(get_evidence_provider)],
+    evidence_redactor: Annotated[EvidenceRedactor, Depends(get_evidence_redactor)],
 ) -> InvestigationRecord:
     load_result = next(
         (
@@ -93,19 +112,20 @@ def open_incident(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "enrollment_not_ready", "message": str(error)},
         ) from error
+    signal = AlertSignal(
+        signal_id=f"manual-{uuid4().hex}",
+        application_id=profile.application_id,
+        namespace=request.target.namespace,
+        workload_name=request.target.name,
+        workload_namespace=request.target.namespace,
+        summary=request.summary,
+        observed_at=datetime.now(UTC),
+    )
     record = store.create(
         profile,
-        AlertSignal(
-            signal_id=f"manual-{uuid4().hex}",
-            application_id=profile.application_id,
-            namespace=request.target.namespace,
-            workload_name=request.target.name,
-            workload_namespace=request.target.namespace,
-            summary=request.summary,
-            observed_at=datetime.now(UTC),
-        ),
+        signal,
     )
-    return store.append_audit_event(
+    record = store.append_audit_event(
         record.incident.incident_id,
         event=AuditEvent(
             event_id=f"audit-{uuid4().hex}",
@@ -115,6 +135,17 @@ def open_incident(
             actor="local-operator",
         ),
     )
+    InitialEvidenceWindowCollector(evidence_provider, evidence_redactor).collect(
+        store,
+        incident_id=record.incident.incident_id,
+        profile=profile,
+        signal=signal,
+        window=record.evidence_window,
+    )
+    completed_record = store.get(record.incident.incident_id)
+    if completed_record is None:
+        raise RuntimeError("incident disappeared while collecting its evidence window")
+    return completed_record
 
 
 @router.get("", response_model=tuple[InvestigationRecord, ...])

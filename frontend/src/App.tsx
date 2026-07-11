@@ -22,7 +22,28 @@ type IncidentRecord = {
     namespace: string;
     workloads: Array<{ reference: { name: string }; executable: boolean; protected_dependency: boolean }>;
   };
-  evidence: Array<{ evidence_id: string; source: string; redacted_excerpt: string }>;
+  evidence_window: { started_at: string; ended_at: string; captured_at: string };
+  evidence: Array<{
+    evidence_id: string;
+    source: string;
+    query: string;
+    query_reference: string;
+    evidence_window_id: string;
+    observed_at: string;
+    scope: { namespace: string; name: string };
+    redacted_excerpt: string;
+    content_hash: string;
+    truncated: boolean;
+    provider_reference: string;
+  }>;
+  evidence_retrieval_failures: Array<{
+    failure_id: string;
+    source: string | null;
+    query: string | null;
+    scope: { name: string } | null;
+    occurred_at: string;
+    message: string;
+  }>;
   audit_events: Array<{ event_id: string; event_type: string; occurred_at: string; actor: string }>;
 };
 
@@ -274,6 +295,45 @@ function IncidentDetail({ record }: { record: IncidentRecord }) {
             </li>
           ))}
         </ol>
+      </article>
+
+      <article className="incident-card incident-evidence">
+        <h2>Initial Evidence Window</h2>
+        <p className="evidence-window">
+          {new Date(record.evidence_window.started_at).toLocaleString()} — {new Date(record.evidence_window.ended_at).toLocaleString()}
+        </p>
+        <p className="evidence-window">Captured: {new Date(record.evidence_window.captured_at).toLocaleString()}</p>
+        <ul className="plain-list evidence-list">
+          {record.evidence.map((evidence) => (
+            <li key={evidence.evidence_id}>
+              <strong>
+                {titleCase(evidence.source)} · {titleCase(evidence.query)} · {evidence.scope.name}
+              </strong>
+              <span>{evidence.redacted_excerpt}</span>
+              <small>
+                Scope: {evidence.scope.namespace}/{evidence.scope.name} · Observed: {new Date(evidence.observed_at).toLocaleString()}
+                <br />
+                Query: {evidence.query_reference} · Hash: {evidence.content_hash}
+                <br />
+                {evidence.provider_reference}
+                {evidence.truncated ? " · truncated to the Evidence Budget" : ""}
+              </small>
+            </li>
+          ))}
+        </ul>
+        <h3>Evidence retrieval failures</h3>
+        {record.evidence_retrieval_failures.length ? (
+          <ul className="plain-list evidence-failures">
+            {record.evidence_retrieval_failures.map((failure) => (
+              <li key={failure.failure_id}>
+                {failure.message}
+                {failure.query ? ` · ${titleCase(failure.query)}` : ""}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="evidence-window">None. Every initial retrieval completed safely.</p>
+        )}
       </article>
     </section>
   );

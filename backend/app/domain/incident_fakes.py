@@ -17,7 +17,9 @@ from app.domain.incidents import (
     EvidenceBudget,
     EvidenceMapping,
     EvidenceObservation,
+    EvidenceProvider,
     EvidenceQueryKind,
+    EvidenceRetrievalFailure,
     EvidenceSource,
     EvidenceWindow,
     Incident,
@@ -26,6 +28,7 @@ from app.domain.incidents import (
     ManagedWorkload,
     NamespaceEnrollmentState,
     ProfileValidationIssue,
+    RawEvidenceObservation,
     RecoveryCriteria,
     ReplicaBounds,
     RoleBindingEnrollmentState,
@@ -81,13 +84,33 @@ def fake_application_profile() -> ApplicationProfile:
             EvidenceMapping(
                 source=EvidenceSource.KUBERNETES,
                 kind=EvidenceQueryKind.WORKLOAD_STATE,
+                scope=WorkloadReference(namespace="online-boutique", name="recommendationservice"),
                 identifier="recommendationservice-rollout",
+            ),
+            EvidenceMapping(
+                source=EvidenceSource.KUBERNETES,
+                kind=EvidenceQueryKind.POD_EVENTS,
+                scope=WorkloadReference(namespace="online-boutique", name="recommendationservice"),
+                identifier="recommendationservice-events",
+            ),
+            EvidenceMapping(
+                source=EvidenceSource.CLOUD_LOGGING,
+                kind=EvidenceQueryKind.POD_LOGS,
+                scope=WorkloadReference(namespace="online-boutique", name="recommendationservice"),
+                identifier="recommendationservice-logs",
             ),
             EvidenceMapping(
                 source=EvidenceSource.CLOUD_MONITORING,
                 kind=EvidenceQueryKind.METRICS,
+                scope=WorkloadReference(namespace="online-boutique", name="recommendationservice"),
                 identifier="checkout-success-rate",
                 query_template="sum(rate(checkout_requests_total[5m]))",
+            ),
+            EvidenceMapping(
+                source=EvidenceSource.KUBERNETES,
+                kind=EvidenceQueryKind.CHANGE_HISTORY,
+                scope=WorkloadReference(namespace="online-boutique", name="recommendationservice"),
+                identifier="recommendationservice-revisions",
             ),
         ),
         evidence_budget=EvidenceBudget(
@@ -113,9 +136,9 @@ class InMemoryApplicationProfileProvider:
     def list_profiles(self) -> tuple[ApplicationProfileLoadResult, ...]:
         return tuple(self._load(profile, index) for index, profile in enumerate(self._profiles))
 
-    def reload(self, profiles: tuple[ApplicationProfile | dict[str, Any], ...]) -> tuple[
-        ApplicationProfileLoadResult, ...
-    ]:
+    def reload(
+        self, profiles: tuple[ApplicationProfile | dict[str, Any], ...]
+    ) -> tuple[ApplicationProfileLoadResult, ...]:
         self._profiles = profiles
         return self.list_profiles()
 
@@ -171,11 +194,7 @@ class FakeEnrollmentProvider(EnrollmentProvider):
                     WorkloadEnrollmentState(
                         reference=workload.reference,
                         exists=True,
-                        labels=(
-                            {"kubecouncil.io/managed": "true"}
-                            if workload.executable
-                            else {}
-                        ),
+                        labels=({"kubecouncil.io/managed": "true"} if workload.executable else {}),
                     )
                     for workload in profile.workloads
                 ),
@@ -224,6 +243,69 @@ class FakeEnrollmentProvider(EnrollmentProvider):
         return self._snapshot
 
 
+class FakeEvidenceProvider(EvidenceProvider):
+    """Bounded deterministic observations used by the local investigation path."""
+
+    def __init__(self, observations: tuple[RawEvidenceObservation, ...] | None = None) -> None:
+        self._observations = observations
+
+    def collect_initial(
+        self,
+        profile: ApplicationProfile,
+        signal: AlertSignal,
+        window: EvidenceWindow,
+    ) -> tuple[RawEvidenceObservation, ...]:
+        if self._observations is not None:
+            return self._observations
+        target = WorkloadReference(namespace=signal.namespace, name=signal.workload_name)
+        return (
+            RawEvidenceObservation(
+                source=EvidenceSource.KUBERNETES,
+                kind=EvidenceQueryKind.WORKLOAD_STATE,
+                scope=target,
+                content="Deployment generation 8 is available; rollout revision 8 is active.",
+                provider_reference="fake://kubernetes/deployments/recommendationservice",
+                observed_at=window.ended_at,
+            ),
+            RawEvidenceObservation(
+                source=EvidenceSource.KUBERNETES,
+                kind=EvidenceQueryKind.POD_EVENTS,
+                scope=target,
+                content="Pod recommendationservice-7d9f restarted after an OOMKilled termination.",
+                provider_reference="fake://kubernetes/events/recommendationservice",
+                observed_at=window.ended_at,
+            ),
+            RawEvidenceObservation(
+                source=EvidenceSource.CLOUD_LOGGING,
+                kind=EvidenceQueryKind.POD_LOGS,
+                scope=target,
+                content="recommendationservice process terminated: OOMKilled",
+                provider_reference="fake://logging/recommendationservice",
+                observed_at=window.ended_at,
+            ),
+            RawEvidenceObservation(
+                source=EvidenceSource.CLOUD_MONITORING,
+                kind=EvidenceQueryKind.METRICS,
+                scope=target,
+                provider_reference="fake://monitoring/checkout-success-rate",
+                observed_at=window.ended_at,
+                item_count=2,
+                metric_series=(
+                    "checkout success rate fell to 91%.",
+                    "p95 latency rose to 2400ms.",
+                ),
+            ),
+            RawEvidenceObservation(
+                source=EvidenceSource.KUBERNETES,
+                kind=EvidenceQueryKind.CHANGE_HISTORY,
+                scope=target,
+                content="ReplicaSet revision 8 introduced a lower memory limit than revision 7.",
+                provider_reference="fake://kubernetes/replicasets/recommendationservice",
+                observed_at=window.ended_at,
+            ),
+        )
+
+
 class InMemoryIncidentStore(IncidentStore):
     def __init__(self) -> None:
         self._records: dict[str, InvestigationRecord] = {}
@@ -237,6 +319,13 @@ class InMemoryIncidentStore(IncidentStore):
         if workload not in {managed.reference for managed in profile.workloads}:
             raise ValueError("alert signal workload is not enrolled by the supplied profile")
         incident_id = f"inc-{uuid4().hex}"
+        started_at = signal.window_start or (
+            signal.observed_at - timedelta(minutes=profile.evidence_budget.maximum_window_minutes)
+        )
+        ended_at = signal.window_end or signal.observed_at
+        maximum_window = timedelta(minutes=profile.evidence_budget.maximum_window_minutes)
+        if ended_at - started_at > maximum_window:
+            raise ValueError("alert window exceeds the application profile evidence budget")
         record = InvestigationRecord(
             incident=Incident(
                 incident_id=incident_id,
@@ -247,9 +336,10 @@ class InMemoryIncidentStore(IncidentStore):
             ),
             application_profile=profile,
             evidence_window=EvidenceWindow(
+                window_id=f"window-{uuid4().hex}",
                 incident_id=incident_id,
-                started_at=signal.observed_at - timedelta(minutes=5),
-                ended_at=signal.observed_at,
+                started_at=started_at,
+                ended_at=ended_at,
                 captured_at=signal.observed_at,
             ),
         )
@@ -271,6 +361,14 @@ class InMemoryIncidentStore(IncidentStore):
         record = self._required_record(incident_id)
         if evidence.incident_id != incident_id:
             raise ValueError("evidence must belong to the requested incident")
+        if evidence.evidence_window_id != record.evidence_window.window_id:
+            raise ValueError("evidence must belong to the immutable initial evidence window")
+        if not (
+            record.evidence_window.started_at
+            <= evidence.observed_at
+            <= record.evidence_window.ended_at
+        ):
+            raise ValueError("evidence observation falls outside the immutable evidence window")
         enrolled_workloads = {
             workload.reference for workload in record.application_profile.workloads
         }
@@ -279,6 +377,27 @@ class InMemoryIncidentStore(IncidentStore):
         if any(item.evidence_id == evidence.evidence_id for item in record.evidence):
             raise ValueError("evidence already exists and is append-only")
         return self._replace(record.model_copy(update={"evidence": (*record.evidence, evidence)}))
+
+    def append_evidence_retrieval_failure(
+        self, incident_id: str, failure: EvidenceRetrievalFailure
+    ) -> InvestigationRecord:
+        record = self._required_record(incident_id)
+        if failure.incident_id != incident_id:
+            raise ValueError("evidence retrieval failure must belong to the requested incident")
+        if any(
+            item.failure_id == failure.failure_id for item in record.evidence_retrieval_failures
+        ):
+            raise ValueError("evidence retrieval failure already exists and is append-only")
+        return self._replace(
+            record.model_copy(
+                update={
+                    "evidence_retrieval_failures": (
+                        *record.evidence_retrieval_failures,
+                        failure,
+                    )
+                }
+            )
+        )
 
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord:
         record = self._required_record(incident_id)
@@ -328,12 +447,15 @@ class InMemoryIncidentStore(IncidentStore):
         )
 
     def append_fake_evidence(self, incident_id: str) -> EvidenceObservation:
-        now = datetime.now(UTC)
+        record = self._required_record(incident_id)
         evidence = EvidenceObservation(
             evidence_id=f"evidence-{uuid4().hex}",
             incident_id=incident_id,
             source=EvidenceSource.KUBERNETES,
-            observed_at=now,
+            query=EvidenceQueryKind.WORKLOAD_STATE,
+            query_reference="recommendationservice-rollout",
+            evidence_window_id=record.evidence_window.window_id,
+            observed_at=record.evidence_window.ended_at,
             scope=WorkloadReference(namespace="online-boutique", name="recommendationservice"),
             redacted_excerpt="Container terminated with reason OOMKilled.",
             content_hash="fake-evidence-hash",

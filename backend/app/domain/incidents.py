@@ -164,6 +164,7 @@ class EvidenceMapping(KubeCouncilModel):
 
     source: EvidenceSource
     kind: EvidenceQueryKind
+    scope: WorkloadReference
     identifier: str = Field(min_length=1, max_length=500)
     query_template: str | None = Field(default=None, min_length=1, max_length=2000)
 
@@ -233,10 +234,16 @@ class ApplicationProfile(KubeCouncilModel):
                 "synthetic availability fallback requires a critical journey synthetic probe"
             )
         mapping_keys = {
-            (mapping.source, mapping.kind, mapping.identifier) for mapping in self.evidence_mappings
+            (mapping.source, mapping.kind, mapping.scope, mapping.identifier)
+            for mapping in self.evidence_mappings
         }
         if len(mapping_keys) != len(self.evidence_mappings):
             raise ValueError("application profile evidence mappings must be unique")
+        if any(
+            mapping.scope not in {workload.reference for workload in self.workloads}
+            for mapping in self.evidence_mappings
+        ):
+            raise ValueError("evidence mappings must target a declared workload")
         return self
 
 
@@ -391,6 +398,7 @@ class Incident(KubeCouncilModel):
 
 
 class EvidenceWindow(KubeCouncilModel):
+    window_id: str = Field(min_length=1)
     incident_id: str = Field(min_length=1)
     started_at: datetime
     ended_at: datetime
@@ -521,12 +529,57 @@ class EvidenceObservation(KubeCouncilModel):
     evidence_id: str = Field(min_length=1)
     incident_id: str = Field(min_length=1)
     source: EvidenceSource
+    query: EvidenceQueryKind
+    query_reference: str = Field(min_length=1)
+    evidence_window_id: str = Field(min_length=1)
     observed_at: datetime
     scope: WorkloadReference
     redacted_excerpt: str = Field(min_length=1, max_length=10000)
     content_hash: str = Field(min_length=8)
     truncated: bool = False
     provider_reference: str = Field(min_length=1)
+
+
+class RawEvidenceObservation(KubeCouncilModel):
+    """A bounded provider response that exists only before deterministic redaction."""
+
+    source: EvidenceSource
+    kind: EvidenceQueryKind
+    scope: WorkloadReference
+    content: str = Field(default="", max_length=100_000)
+    provider_reference: str = Field(min_length=1)
+    observed_at: datetime | None = None
+    item_count: int = Field(default=1, ge=1)
+    metric_series: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def uses_bounded_metric_series(self) -> "RawEvidenceObservation":
+        if self.kind == EvidenceQueryKind.METRICS:
+            if not self.metric_series:
+                raise ValueError("metric evidence must provide structured metric series")
+            if self.content:
+                raise ValueError("metric evidence cannot include an unstructured content payload")
+            if self.item_count != len(self.metric_series):
+                raise ValueError(
+                    "metric evidence item count must match its structured metric series"
+                )
+        elif not self.content:
+            raise ValueError("non-metric evidence requires content")
+        elif self.metric_series:
+            raise ValueError("only metric evidence can include metric series")
+        return self
+
+
+class EvidenceRetrievalFailure(KubeCouncilModel):
+    """Safe, user-visible metadata for evidence that was deliberately not retained."""
+
+    failure_id: str = Field(min_length=1)
+    incident_id: str = Field(min_length=1)
+    source: EvidenceSource | None = None
+    query: EvidenceQueryKind | None = None
+    scope: WorkloadReference | None = None
+    occurred_at: datetime
+    message: str = Field(min_length=1, max_length=1000)
 
 
 class EvidenceQuery(KubeCouncilModel):
@@ -688,6 +741,7 @@ class InvestigationRecord(KubeCouncilModel):
     application_profile: ApplicationProfile
     evidence_window: EvidenceWindow
     evidence: tuple[EvidenceObservation, ...] = ()
+    evidence_retrieval_failures: tuple[EvidenceRetrievalFailure, ...] = ()
     evidence_queries: tuple[EvidenceQuery, ...] = ()
     findings: tuple[SpecialistFinding, ...] = ()
     model_invocations: tuple[ModelInvocation, ...] = ()
@@ -720,6 +774,7 @@ class InvestigationRecord(KubeCouncilModel):
             )
         entry_incident_ids = (
             [item.incident_id for item in self.evidence]
+            + [item.incident_id for item in self.evidence_retrieval_failures]
             + [item.incident_id for item in self.evidence_queries]
             + [item.incident_id for item in self.findings]
             + [item.incident_id for item in self.model_invocations]
@@ -791,6 +846,10 @@ class IncidentStore(Protocol):
         self, incident_id: str, evidence: EvidenceObservation
     ) -> InvestigationRecord: ...
 
+    def append_evidence_retrieval_failure(
+        self, incident_id: str, failure: EvidenceRetrievalFailure
+    ) -> InvestigationRecord: ...
+
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord: ...
 
     def compare_and_set(
@@ -811,3 +870,20 @@ class EnrollmentProvider(Protocol):
     """Reads only the Kubernetes prerequisites required to assess Enrollment."""
 
     def inspect(self, profile: ApplicationProfile) -> EnrollmentSnapshot: ...
+
+
+class EvidenceProvider(Protocol):
+    """Returns only bounded, allowlisted initial evidence for an enrolled application."""
+
+    def collect_initial(
+        self,
+        profile: ApplicationProfile,
+        signal: AlertSignal,
+        window: EvidenceWindow,
+    ) -> tuple[RawEvidenceObservation, ...]: ...
+
+
+class EvidenceRedactor(Protocol):
+    """Removes sensitive values before evidence crosses any persistence or UI boundary."""
+
+    def redact(self, content: str) -> str: ...

@@ -240,7 +240,8 @@ h2 {
 }
 
 .incident-summary,
-.incident-timeline {
+.incident-timeline,
+.incident-evidence {
   grid-column: span 7;
 }
 
@@ -298,6 +299,39 @@ h2 {
   color: #164d5b;
 }
 
+.evidence-window {
+  margin-bottom: 7px;
+  color: #5e7076;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.evidence-list li {
+  display: grid;
+  gap: 4px;
+}
+
+.evidence-list span {
+  color: #455960;
+  overflow-wrap: anywhere;
+}
+
+.evidence-list small {
+  color: #6d7e83;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  overflow-wrap: anywhere;
+}
+
+.incident-evidence h3 {
+  margin: 22px 0 0;
+  color: #173943;
+  font-size: 1rem;
+}
+
+.evidence-failures {
+  color: #8b4214;
+}
+
 @media (max-width: 760px) {
   .incident-shell {
     width: min(100% - 24px, 1120px);
@@ -316,7 +350,8 @@ h2 {
 
   .incident-card,
   .incident-summary,
-  .incident-timeline {
+  .incident-timeline,
+  .incident-evidence {
     grid-column: span 12;
   }
 

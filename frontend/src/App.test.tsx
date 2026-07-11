@@ -40,6 +40,13 @@ describe("App", () => {
     expect(screenText()).toContain("Investigation: Not Started");
     expect(screenText()).toContain("Intervention: Not Started");
     expect(screenText()).toContain("incident_opened");
+    expect(screenText()).toContain("Initial Evidence Window");
+    expect(screenText()).toContain("Cloud Logging · Pod Logs · recommendationservice");
+    expect(screenText()).toContain("Scope: online-boutique/recommendationservice");
+    expect(screenText()).toContain("Query: recommendationservice-logs · Hash: evidence-hash");
+    expect(screenText()).toContain("fake://logging/recommendationservice");
+    expect(screenText()).toContain("Evidence retrieval failures");
+    expect(screenText()).toContain("redaction failed; evidence was not retained");
   });
 
   it("shows Enrollment readiness and keeps a protected dependency observe-only", async () => {
@@ -138,7 +145,36 @@ function incidentRecord() {
       evidence_budget: {},
       recovery_criteria: {},
     },
-    evidence: [],
+    evidence_window: {
+      started_at: "2026-07-10T23:30:00Z",
+      ended_at: "2026-07-11T00:00:00Z",
+      captured_at: "2026-07-11T00:00:00Z",
+    },
+    evidence: [
+      {
+        evidence_id: "evidence-1",
+        source: "cloud_logging",
+        query: "pod_logs",
+        query_reference: "recommendationservice-logs",
+        evidence_window_id: "window-1",
+        observed_at: "2026-07-11T00:00:00Z",
+        scope: { namespace: "online-boutique", name: "recommendationservice" },
+        redacted_excerpt: "OOMKilled with token=<redacted>",
+        content_hash: "evidence-hash",
+        truncated: true,
+        provider_reference: "fake://logging/recommendationservice",
+      },
+    ],
+    evidence_retrieval_failures: [
+      {
+        failure_id: "failure-1",
+        source: "cloud_logging",
+        query: "pod_logs",
+        scope: { name: "recommendationservice" },
+        occurred_at: "2026-07-11T00:00:00Z",
+        message: "redaction failed; evidence was not retained",
+      },
+    ],
     evidence_queries: [],
     findings: [],
     hypotheses: [],
