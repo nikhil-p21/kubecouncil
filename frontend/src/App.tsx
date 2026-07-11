@@ -4,6 +4,7 @@ import "./App.css";
 
 type Outcome = "not_started" | "proposal_ready" | "needs_more_evidence" | "no_safe_action" | "inconclusive";
 type InterventionOutcome = "not_started" | "monitoring" | "succeeded" | "rolled_back" | "failed" | "safe_halted";
+type SpecialistRole = "health" | "logs" | "metrics" | "change";
 
 type IncidentRecord = {
   incident: {
@@ -47,7 +48,55 @@ type IncidentRecord = {
     occurred_at: string;
     message: string;
   }>;
-  audit_events: Array<{ event_id: string; event_type: string; occurred_at: string; actor: string; cursor: number }>;
+  findings: Array<{
+    finding_id: string;
+    specialist: SpecialistRole;
+    citations: Array<{ evidence_id: string; observation: string }>;
+    candidate_explanations: string[];
+    confidence: number;
+    contradictions: string[];
+    unknowns: string[];
+  }>;
+  model_invocations: Array<{
+    invocation_id: string;
+    role: SpecialistRole | "coordinator";
+    model_id: string;
+    prompt_version: string;
+    thinking_level: string;
+    latency_ms: number;
+    input_tokens: number;
+    output_tokens: number;
+    tool_count: number;
+    output_valid: boolean;
+    failure_reason: string | null;
+  }>;
+  hypotheses: Array<{
+    hypothesis_id: string;
+    rank: number;
+    statement: string;
+    falsification_test: string;
+    confidence: number;
+    citations: Array<{ evidence_id: string; observation: string }>;
+  }>;
+  proposal: {
+    action: {
+      action_type: "rollback_deployment" | "scale_deployment" | "restart_deployment";
+      target: { namespace: string; name: string };
+      revision?: number;
+      replicas?: number;
+    };
+    expected_impact: string;
+    rollback_strategy: string;
+  } | null;
+  manual_guidance: { reason: string; guidance: string; outcome: Outcome } | null;
+  audit_events: Array<{
+    event_id: string;
+    event_type: string;
+    occurred_at: string;
+    actor: string;
+    cursor: number;
+    details?: Record<string, string>;
+  }>;
 };
 
 type ApiError = { detail?: { code?: string; message?: string } };
@@ -107,6 +156,7 @@ export function App() {
   const [record, setRecord] = useState<IncidentRecord | null>(null);
   const [message, setMessage] = useState("Open a local fake incident to inspect the incident-response record.");
   const [opening, setOpening] = useState(false);
+  const [investigating, setInvestigating] = useState(false);
   const [applications, setApplications] = useState<ManagedApplication[]>([]);
   const [applicationsMessage, setApplicationsMessage] = useState("Loading Enrollment readiness.");
 
@@ -163,7 +213,7 @@ export function App() {
         body: JSON.stringify({ summary: "recommendationservice OOMKilled during checkout" }),
       });
       setRecord(created);
-      setMessage("Fake incident opened. No remediation is proposed in this slice.");
+      setMessage("Fake incident opened. Its redacted Evidence Window is ready for the Council.");
     } catch (error) {
       if (error instanceof ApiRequestError) {
         setMessage(error.message);
@@ -173,6 +223,25 @@ export function App() {
       }
     } finally {
       setOpening(false);
+    }
+  }
+
+  async function runCouncil(incidentId: string): Promise<void> {
+    setInvestigating(true);
+    setMessage("Four bounded Specialists are investigating in parallel.");
+    try {
+      const investigated = await requestJson<IncidentRecord>(
+        `/api/incidents/${incidentId}/investigate`,
+        { method: "POST" },
+      );
+      setRecord(investigated);
+      setMessage("Council investigation completed with one consolidated outcome.");
+    } catch (error) {
+      setMessage(
+        error instanceof ApiRequestError ? error.message : "Unable to complete the Council investigation.",
+      );
+    } finally {
+      setInvestigating(false);
     }
   }
 
@@ -196,7 +265,15 @@ export function App() {
         </button>
       </section>
 
-      {record ? <IncidentDetail record={record} /> : <EmptyIncidentState />}
+      {record ? (
+        <IncidentDetail
+          investigating={investigating}
+          onInvestigate={runCouncil}
+          record={record}
+        />
+      ) : (
+        <EmptyIncidentState />
+      )}
     </main>
   );
 }
@@ -278,7 +355,15 @@ function EmptyIncidentState() {
   );
 }
 
-function IncidentDetail({ record }: { record: IncidentRecord }) {
+function IncidentDetail({
+  investigating,
+  onInvestigate,
+  record,
+}: {
+  investigating: boolean;
+  onInvestigate: (incidentId: string) => Promise<void>;
+  record: IncidentRecord;
+}) {
   const { incident, application_profile: profile } = record;
   return (
     <section className="incident-grid">
@@ -286,6 +371,11 @@ function IncidentDetail({ record }: { record: IncidentRecord }) {
         <p className="eyebrow">{profile.display_name}</p>
         <h2>{incident.summary}</h2>
         <p className="incident-id">{incident.incident_id}</p>
+        {incident.investigation_outcome === "not_started" ? (
+          <button disabled={investigating} onClick={() => void onInvestigate(incident.incident_id)}>
+            {investigating ? "Investigating…" : "Run Council"}
+          </button>
+        ) : null}
         <dl className="status-dimensions">
           <div>
             <dt>Lifecycle</dt>
@@ -338,6 +428,7 @@ function IncidentDetail({ record }: { record: IncidentRecord }) {
           {record.audit_events.map((event) => (
             <li key={event.event_id}>
               <strong>{event.event_type}</strong> · {event.actor} · {new Date(event.occurred_at).toLocaleString()}
+              {event.details?.specialist ? ` · ${titleCase(event.details.specialist)} Specialist` : ""}
             </li>
           ))}
         </ol>
@@ -382,6 +473,116 @@ function IncidentDetail({ record }: { record: IncidentRecord }) {
           <p className="evidence-window">None. Every initial retrieval completed safely.</p>
         )}
       </article>
+
+      {incident.investigation_outcome !== "not_started" ? <CouncilDetail record={record} /> : null}
+    </section>
+  );
+}
+
+const specialistRoles: SpecialistRole[] = ["health", "logs", "metrics", "change"];
+
+function CouncilDetail({ record }: { record: IncidentRecord }) {
+  return (
+    <article className="incident-card council-detail">
+      <div className="timeline-heading">
+        <h2>Council investigation</h2>
+        <span>{titleCase(record.incident.investigation_outcome)}</span>
+      </div>
+      <div className="specialist-grid">
+        {specialistRoles.map((role) => {
+          const finding = record.findings.find((item) => item.specialist === role);
+          const failure = [...record.model_invocations]
+            .reverse()
+            .find((item) => item.role === role && !item.output_valid);
+          return (
+            <section className="specialist-card" key={role}>
+              <h3>{titleCase(role)} Specialist</h3>
+              {finding ? (
+                <>
+                  <p className="confidence">{Math.round(finding.confidence * 100)}% confidence</p>
+                  <ul className="plain-list compact-list">
+                    {finding.candidate_explanations.map((explanation) => (
+                      <li key={explanation}>{explanation}</li>
+                    ))}
+                  </ul>
+                  <h4>Disagreements and unknowns</h4>
+                  <ul className="plain-list compact-list">
+                    {[...finding.contradictions, ...finding.unknowns].map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                  <small>
+                    {finding.citations.map((citation) => citation.evidence_id).join(", ")}
+                  </small>
+                </>
+              ) : (
+                <p className="specialist-failure">
+                  {failure?.failure_reason ?? "No validated Specialist Finding was recorded."}
+                </p>
+              )}
+            </section>
+          );
+        })}
+      </div>
+
+      <section className="hypothesis-list">
+        <h3>Ranked Root Cause Hypotheses</h3>
+        {record.hypotheses.length ? (
+          <ol className="plain-list">
+            {record.hypotheses.map((hypothesis) => (
+              <li key={hypothesis.hypothesis_id}>
+                <strong>
+                  Rank {hypothesis.rank} · {Math.round(hypothesis.confidence * 100)}% confidence
+                </strong>
+                <span>{hypothesis.statement}</span>
+                <small>Falsify by: {hypothesis.falsification_test}</small>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p>No hypothesis passed structured validation.</p>
+        )}
+      </section>
+
+      <CouncilOutcome record={record} />
+    </article>
+  );
+}
+
+function CouncilOutcome({ record }: { record: IncidentRecord }) {
+  const proposal = record.proposal;
+  if (proposal) {
+    const action = proposal.action;
+    const actionDetail =
+      action.action_type === "rollback_deployment"
+        ? `revision ${action.revision}`
+        : action.action_type === "scale_deployment"
+          ? `${action.replicas} replicas`
+          : "controlled rollout";
+    return (
+      <section className="council-outcome">
+        <p className="eyebrow">Proposal Ready</p>
+        <h3>
+          {titleCase(action.action_type)} · {action.target.name} · {actionDetail}
+        </h3>
+        <p>{proposal.expected_impact}</p>
+        <small>Failure strategy: {proposal.rollback_strategy}</small>
+      </section>
+    );
+  }
+  if (record.manual_guidance) {
+    return (
+      <section className="council-outcome safe-refusal">
+        <p className="eyebrow">Safe Refusal · {titleCase(record.manual_guidance.outcome)}</p>
+        <h3>{record.manual_guidance.reason}</h3>
+        <p>{record.manual_guidance.guidance}</p>
+      </section>
+    );
+  }
+  return (
+    <section className="council-outcome inconclusive">
+      <p className="eyebrow">Inconclusive</p>
+      <p>The Council did not produce an executable action.</p>
     </section>
   );
 }

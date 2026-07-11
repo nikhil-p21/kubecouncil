@@ -56,6 +56,12 @@ class SpecialistRole(StrEnum):
     CHANGE = "change"
 
 
+class SpecialistRunStatus(StrEnum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+
+
 class EvidenceQueryKind(StrEnum):
     WORKLOAD_STATE = "workload_state"
     POD_EVENTS = "pod_events"
@@ -661,18 +667,83 @@ class SpecialistFinding(KubeCouncilModel):
     unknowns: tuple[str, ...] = ()
 
 
+class SpecialistEvidenceQueryRequest(KubeCouncilModel):
+    """Model-selected profile mapping; provider scope is always resolved server-side."""
+
+    mapping_identifier: str = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class SpecialistModelOutput(KubeCouncilModel):
+    finding: SpecialistFinding | None = None
+    evidence_query: SpecialistEvidenceQueryRequest | None = None
+
+    @model_validator(mode="after")
+    def contains_exactly_one_next_step(self) -> "SpecialistModelOutput":
+        if (self.finding is None) == (self.evidence_query is None):
+            raise ValueError("specialist output must contain exactly one finding or evidence query")
+        return self
+
+
+class ModelResponse(KubeCouncilModel):
+    """Provider-independent model response with auditable usage metadata."""
+
+    output: dict[str, object]
+    model_id: str = Field(min_length=1)
+    prompt_version: str = Field(min_length=1)
+    thinking_level: Literal["minimal", "low", "medium", "high"]
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+
+
+class SpecialistRequest(KubeCouncilModel):
+    """The complete and deliberately narrow model context for one Specialist turn."""
+
+    incident_id: str = Field(min_length=1)
+    role: SpecialistRole
+    evidence: tuple[EvidenceObservation, ...] = Field(min_length=1)
+    allowed_mapping_identifiers: tuple[str, ...] = ()
+    completed_query_rounds: int = Field(ge=0, le=2)
+    evidence_is_untrusted: Literal[True] = True
+
+
+class SpecialistResult(KubeCouncilModel):
+    role: SpecialistRole
+    status: SpecialistRunStatus
+    finding: SpecialistFinding | None = None
+    failure_reason: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def matches_status(self) -> "SpecialistResult":
+        if self.status is SpecialistRunStatus.SUCCEEDED:
+            if self.finding is None or self.failure_reason is not None:
+                raise ValueError("successful Specialist result requires only a finding")
+        elif self.finding is not None or self.failure_reason is None:
+            raise ValueError("failed or timed-out Specialist result requires only a reason")
+        return self
+
+
 class ModelInvocation(KubeCouncilModel):
     invocation_id: str = Field(min_length=1)
     incident_id: str = Field(min_length=1)
     role: SpecialistRole | Literal["coordinator"]
     model_id: str = Field(min_length=1)
     prompt_version: str = Field(min_length=1)
+    thinking_level: Literal["minimal", "low", "medium", "high"]
     latency_ms: int = Field(ge=0)
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     tool_count: int = Field(ge=0)
     output_valid: bool
     failure_reason: str | None = None
+
+    @model_validator(mode="after")
+    def records_validation_failure(self) -> "ModelInvocation":
+        if self.output_valid and self.failure_reason is not None:
+            raise ValueError("valid model output cannot include a failure reason")
+        if not self.output_valid and self.failure_reason is None:
+            raise ValueError("invalid model output requires a failure reason")
+        return self
 
 
 class RootCauseHypothesis(KubeCouncilModel):
@@ -724,6 +795,59 @@ class ManualGuidance(KubeCouncilModel):
     reason: str = Field(min_length=1)
     guidance: str = Field(min_length=1)
     outcome: Literal[InvestigationOutcome.NO_SAFE_ACTION, InvestigationOutcome.NEEDS_MORE_EVIDENCE]
+
+
+class CoordinatorRequest(KubeCouncilModel):
+    """Structured Specialist results and declared policy facts available to the Coordinator."""
+
+    incident_id: str = Field(min_length=1)
+    incident_summary: str = Field(min_length=1)
+    application_profile: ApplicationProfile
+    evidence_hash: str = Field(min_length=8)
+    specialists: tuple[SpecialistResult, ...] = Field(min_length=4, max_length=4)
+
+    @model_validator(mode="after")
+    def includes_each_specialist_once(self) -> "CoordinatorRequest":
+        roles = {result.role for result in self.specialists}
+        if roles != set(SpecialistRole):
+            raise ValueError("Coordinator input must include every Specialist exactly once")
+        return self
+
+
+class CoordinatorOutput(KubeCouncilModel):
+    """One consolidated outcome; policy evaluation remains a later deterministic step."""
+
+    outcome: Literal[
+        InvestigationOutcome.PROPOSAL_READY,
+        InvestigationOutcome.NEEDS_MORE_EVIDENCE,
+        InvestigationOutcome.NO_SAFE_ACTION,
+        InvestigationOutcome.INCONCLUSIVE,
+    ]
+    hypotheses: tuple[RootCauseHypothesis, ...] = ()
+    proposal: RemediationProposal | None = None
+    manual_guidance: ManualGuidance | None = None
+
+    @model_validator(mode="after")
+    def contains_exactly_one_supported_outcome(self) -> "CoordinatorOutput":
+        ranks = [hypothesis.rank for hypothesis in self.hypotheses]
+        if ranks != list(range(1, len(ranks) + 1)):
+            raise ValueError("Root Cause Hypotheses must have consecutive ranks starting at one")
+        if self.outcome is InvestigationOutcome.PROPOSAL_READY:
+            if self.proposal is None or self.manual_guidance is not None:
+                raise ValueError("proposal_ready requires exactly one Remediation Proposal")
+        elif self.outcome in {
+            InvestigationOutcome.NEEDS_MORE_EVIDENCE,
+            InvestigationOutcome.NO_SAFE_ACTION,
+        }:
+            if self.manual_guidance is None or self.proposal is not None:
+                raise ValueError("Safe Refusal requires exactly one Manual Guidance outcome")
+            if self.manual_guidance.outcome is not self.outcome:
+                raise ValueError("Manual Guidance outcome must match the Coordinator outcome")
+        elif self.proposal is not None or self.manual_guidance is not None:
+            raise ValueError("inconclusive output cannot contain a proposal or Manual Guidance")
+        if self.outcome is not InvestigationOutcome.INCONCLUSIVE and not self.hypotheses:
+            raise ValueError("a conclusive Coordinator output requires ranked hypotheses")
+        return self
 
 
 class PolicyDecision(KubeCouncilModel):
@@ -922,6 +1046,18 @@ class IncidentStore(Protocol):
         self, incident_id: str, query: EvidenceQuery
     ) -> InvestigationRecord: ...
 
+    def append_finding(
+        self, incident_id: str, finding: SpecialistFinding
+    ) -> InvestigationRecord: ...
+
+    def append_model_invocation(
+        self, incident_id: str, invocation: ModelInvocation
+    ) -> InvestigationRecord: ...
+
+    def complete_investigation(
+        self, incident_id: str, output: CoordinatorOutput
+    ) -> InvestigationRecord: ...
+
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord: ...
 
     def timeline(self, incident_id: str, *, after: int = 0) -> tuple[AuditEvent, ...]: ...
@@ -961,6 +1097,14 @@ class EvidenceQueryAdapter(Protocol):
     """Executes one server-resolved, bounded, read-only provider request."""
 
     def query(self, request: EvidenceProviderRequest) -> RawEvidenceObservation: ...
+
+
+class IncidentCouncilModel(Protocol):
+    """Structured model boundary; implementations receive no mutation or provider tools."""
+
+    async def analyze_specialist(self, request: SpecialistRequest) -> ModelResponse: ...
+
+    async def coordinate(self, request: CoordinatorRequest) -> ModelResponse: ...
 
 
 class EvidenceRedactor(Protocol):

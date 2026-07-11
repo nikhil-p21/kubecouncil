@@ -12,6 +12,7 @@ from app.domain.incidents import (
     ApplicationProfile,
     ApplicationProfileLoadResult,
     AuditEvent,
+    CoordinatorOutput,
     CriticalJourney,
     EnrollmentProvider,
     EnrollmentSnapshot,
@@ -25,9 +26,11 @@ from app.domain.incidents import (
     EvidenceSource,
     EvidenceWindow,
     Incident,
+    IncidentLifecycle,
     IncidentStore,
     InvestigationRecord,
     ManagedWorkload,
+    ModelInvocation,
     NamespaceEnrollmentState,
     ObservabilityLink,
     ProfileValidationIssue,
@@ -35,9 +38,11 @@ from app.domain.incidents import (
     RecoveryCriteria,
     ReplicaBounds,
     RoleBindingEnrollmentState,
+    SpecialistFinding,
     WorkloadCriticality,
     WorkloadEnrollmentState,
     WorkloadReference,
+    transition_incident,
 )
 
 
@@ -482,6 +487,66 @@ class InMemoryIncidentStore(IncidentStore):
         return self._replace(
             record.model_copy(update={"evidence_queries": (*record.evidence_queries, query)})
         )
+
+    def append_finding(
+        self, incident_id: str, finding: SpecialistFinding
+    ) -> InvestigationRecord:
+        record = self._required_record(incident_id)
+        if finding.incident_id != incident_id:
+            raise ValueError("Specialist Finding must belong to the requested incident")
+        if any(item.finding_id == finding.finding_id for item in record.findings):
+            raise ValueError("Specialist Finding already exists and is append-only")
+        if any(item.specialist is finding.specialist for item in record.findings):
+            raise ValueError("a Specialist may record only one final finding")
+        evidence_ids = {item.evidence_id for item in record.evidence}
+        if any(citation.evidence_id not in evidence_ids for citation in finding.citations):
+            raise ValueError("Specialist Finding must cite recorded evidence")
+        return self._replace(
+            InvestigationRecord.model_validate(
+                record.model_copy(update={"findings": (*record.findings, finding)}).model_dump()
+            )
+        )
+
+    def append_model_invocation(
+        self, incident_id: str, invocation: ModelInvocation
+    ) -> InvestigationRecord:
+        record = self._required_record(incident_id)
+        if invocation.incident_id != incident_id:
+            raise ValueError("model invocation must belong to the requested incident")
+        if any(item.invocation_id == invocation.invocation_id for item in record.model_invocations):
+            raise ValueError("model invocation already exists and is append-only")
+        return self._replace(
+            InvestigationRecord.model_validate(
+                record.model_copy(
+                    update={"model_invocations": (*record.model_invocations, invocation)}
+                ).model_dump()
+            )
+        )
+
+    def complete_investigation(
+        self, incident_id: str, output: CoordinatorOutput
+    ) -> InvestigationRecord:
+        record = self._required_record(incident_id)
+        if record.incident.investigation_outcome.value != "not_started":
+            raise ValueError("investigation already has a terminal outcome")
+        if any(hypothesis.incident_id != incident_id for hypothesis in output.hypotheses):
+            raise ValueError("Root Cause Hypotheses must belong to the requested incident")
+        updated_incident = transition_incident(
+            record.incident,
+            lifecycle=IncidentLifecycle.AWAITING_APPROVAL
+            if output.proposal is not None
+            else IncidentLifecycle.INVESTIGATING,
+            investigation_outcome=output.outcome,
+        ).model_copy(update={"version": record.incident.version + 1})
+        updated = record.model_copy(
+            update={
+                "incident": updated_incident,
+                "hypotheses": output.hypotheses,
+                "proposal": output.proposal,
+                "manual_guidance": output.manual_guidance,
+            }
+        )
+        return self._replace(InvestigationRecord.model_validate(updated.model_dump()))
 
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord:
         record = self._required_record(incident_id)

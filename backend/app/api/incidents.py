@@ -25,6 +25,7 @@ from app.domain.incidents import (
 )
 from app.domain.models import KubeCouncilModel
 from app.services.alerts import AlertNormalizer, AlertNotification
+from app.services.council import BoundedIncidentCouncil, CouncilError
 from app.services.enrollment import EnrollmentChecker, require_enrolled_target
 from app.services.evidence import InitialEvidenceWindowCollector
 from app.services.evidence_gateway import EvidenceGatewayError, EvidenceQueryGateway
@@ -61,6 +62,9 @@ def get_incident_store(request: Request) -> IncidentStore:
             "append_alert_signal",
             "append_evidence",
             "append_evidence_query",
+            "append_finding",
+            "append_model_invocation",
+            "complete_investigation",
             "append_evidence_retrieval_failure",
             "append_audit_event",
             "timeline",
@@ -105,6 +109,13 @@ def get_evidence_query_gateway(request: Request) -> EvidenceQueryGateway:
     if not callable(getattr(gateway, "execute", None)):
         raise RuntimeError("evidence query gateway is unavailable")
     return cast(EvidenceQueryGateway, gateway)
+
+
+def get_incident_council(request: Request) -> BoundedIncidentCouncil:
+    council = getattr(request.app.state, "incident_council", None)
+    if not callable(getattr(council, "investigate", None)):
+        raise RuntimeError("incident Council is unavailable")
+    return cast(BoundedIncidentCouncil, council)
 
 
 @router.post("", response_model=InvestigationRecord, status_code=status.HTTP_201_CREATED)
@@ -199,6 +210,22 @@ def list_incidents(
     store: Annotated[IncidentStore, Depends(get_incident_store)],
 ) -> tuple[InvestigationRecord, ...]:
     return store.list()
+
+
+@router.post("/{incident_id}/investigate", response_model=InvestigationRecord)
+async def investigate_incident(
+    incident_id: str,
+    store: Annotated[IncidentStore, Depends(get_incident_store)],
+    council: Annotated[BoundedIncidentCouncil, Depends(get_incident_council)],
+) -> InvestigationRecord:
+    try:
+        return await council.investigate(store, incident_id)
+    except CouncilError as error:
+        missing = str(error) == "incident does not exist"
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND if missing else status.HTTP_409_CONFLICT,
+            detail={"code": "investigation_rejected", "message": str(error)},
+        ) from error
 
 
 @router.post(

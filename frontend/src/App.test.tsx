@@ -133,6 +133,33 @@ describe("App", () => {
 
     expect(screenText().match(/specialist_started/g)).toHaveLength(1);
   });
+
+  it("runs the Council and shows findings, disagreements, hypotheses, and outcome", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
+      const path = typeof input === "string" ? input : input.toString();
+      if (path === "/api/incidents") {
+        return jsonResponse(incidentRecord());
+      }
+      if (path === "/api/incidents/inc-123/investigate") {
+        return jsonResponse(investigatedIncidentRecord());
+      }
+      return jsonResponse([managedApplication()]);
+    });
+    renderApp();
+
+    await act(async () => buttonByName("Open fake incident").click());
+    await act(async () => buttonByName("Run Council").click());
+
+    expect(screenText()).toContain("Council investigation");
+    expect(screenText()).toContain("Health Specialist");
+    expect(screenText()).toContain("Workload restarts align with the rollout");
+    expect(screenText()).toContain("Disagreements and unknowns");
+    expect(screenText()).toContain("Temporal correlation is not proof of causation");
+    expect(screenText()).toContain("Rank 1 · 92% confidence");
+    expect(screenText()).toContain("lower memory limit caused OOM terminations");
+    expect(screenText()).toContain("Proposal Ready");
+    expect(screenText()).toContain("Rollback Deployment · recommendationservice · revision 7");
+  });
 });
 
 function renderApp(): void {
@@ -258,6 +285,73 @@ function incidentRecord() {
         details: {},
       },
     ],
+  };
+}
+
+function investigatedIncidentRecord() {
+  const record = incidentRecord();
+  return {
+    ...record,
+    incident: {
+      ...record.incident,
+      lifecycle: "awaiting_approval",
+      investigation_outcome: "proposal_ready",
+      version: 2,
+    },
+    findings: [
+      {
+        finding_id: "finding-health",
+        incident_id: "inc-123",
+        specialist: "health",
+        citations: [
+          { evidence_id: "evidence-1", observation: "Pod restarted after OOMKilled." },
+        ],
+        candidate_explanations: ["Workload restarts align with the rollout."],
+        confidence: 0.86,
+        contradictions: ["Temporal correlation is not proof of causation."],
+        unknowns: ["Recovery has not been verified."],
+      },
+    ],
+    model_invocations: [
+      {
+        invocation_id: "model-health",
+        incident_id: "inc-123",
+        role: "health",
+        model_id: "gemini-3.5-flash",
+        prompt_version: "incident-specialist-v1",
+        thinking_level: "medium",
+        latency_ms: 120,
+        input_tokens: 180,
+        output_tokens: 70,
+        tool_count: 0,
+        output_valid: true,
+        failure_reason: null,
+      },
+    ],
+    hypotheses: [
+      {
+        hypothesis_id: "hypothesis-1",
+        incident_id: "inc-123",
+        rank: 1,
+        statement: "The lower memory limit caused OOM terminations.",
+        falsification_test: "Rollback and verify recovery.",
+        confidence: 0.92,
+        citations: [{ evidence_id: "evidence-1", observation: "OOMKilled" }],
+      },
+    ],
+    proposal: {
+      proposal_id: "proposal-1",
+      incident_id: "inc-123",
+      action: {
+        action_type: "rollback_deployment",
+        target: { namespace: "online-boutique", name: "recommendationservice", kind: "Deployment" },
+        revision: 7,
+      },
+      expected_impact: "Restore the known healthy memory configuration.",
+      recovery_criteria: {},
+      rollback_strategy: "Enter Safe Halt if recovery is ambiguous.",
+      evidence_hash: "evidence-hash",
+    },
   };
 }
 

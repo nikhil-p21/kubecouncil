@@ -11,11 +11,14 @@ from app.domain.incidents import (
     AlertSignalEvidence,
     ApplicationProfile,
     AuditEvent,
+    CoordinatorOutput,
     EvidenceObservation,
     EvidenceQuery,
     EvidenceRetrievalFailure,
     Incident,
     InvestigationRecord,
+    ModelInvocation,
+    SpecialistFinding,
 )
 
 
@@ -202,6 +205,25 @@ class FirestoreIncidentStore:
     def append_evidence_query(self, incident_id: str, query: EvidenceQuery) -> InvestigationRecord:
         return self._mutate(
             incident_id, lambda store: store.append_evidence_query(incident_id, query)
+        )
+
+    def append_finding(
+        self, incident_id: str, finding: SpecialistFinding
+    ) -> InvestigationRecord:
+        return self._mutate(incident_id, lambda store: store.append_finding(incident_id, finding))
+
+    def append_model_invocation(
+        self, incident_id: str, invocation: ModelInvocation
+    ) -> InvestigationRecord:
+        return self._mutate(
+            incident_id, lambda store: store.append_model_invocation(incident_id, invocation)
+        )
+
+    def complete_investigation(
+        self, incident_id: str, output: CoordinatorOutput
+    ) -> InvestigationRecord:
+        return self._mutate(
+            incident_id, lambda store: store.complete_investigation(incident_id, output)
         )
 
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord:

@@ -15,6 +15,7 @@ from app.domain.incident_fakes import (
 )
 from app.domain.incidents import EvidenceSource
 from app.observability import RequestIdMiddleware, configure_logging
+from app.services.council import BoundedIncidentCouncil, FakeIncidentCouncilModel
 from app.services.evidence import DeterministicEvidenceRedactor
 from app.services.evidence_gateway import EvidenceQueryGateway, FakeEvidenceQueryAdapter
 
@@ -35,6 +36,10 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             EvidenceSource.CLOUD_MONITORING: fake_query_adapter,
         },
         redactor=application.state.evidence_redactor,
+    )
+    application.state.incident_council = BoundedIncidentCouncil(
+        FakeIncidentCouncilModel(),
+        evidence_gateway=application.state.evidence_query_gateway,
     )
     yield
 

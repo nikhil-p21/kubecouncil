@@ -257,6 +257,10 @@ h2 {
   font-size: 0.82rem;
 }
 
+.incident-summary > button {
+  margin-bottom: 22px;
+}
+
 .status-dimensions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -373,6 +377,97 @@ h2 {
   color: #8b4214;
 }
 
+.council-detail {
+  grid-column: span 12;
+}
+
+.specialist-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.specialist-card {
+  border: 1px solid #d4dfe1;
+  border-radius: 8px;
+  padding: 16px;
+  background: #f7faf9;
+}
+
+.specialist-card h3,
+.specialist-card h4 {
+  margin: 0;
+  color: #173943;
+}
+
+.specialist-card h4 {
+  margin-top: 16px;
+  font-size: 0.85rem;
+}
+
+.specialist-card small,
+.hypothesis-list small,
+.council-outcome small {
+  color: #6d7e83;
+  overflow-wrap: anywhere;
+}
+
+.confidence {
+  margin: 5px 0 0;
+  color: #17633c;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.compact-list {
+  gap: 6px;
+  margin-top: 9px;
+  font-size: 0.9rem;
+}
+
+.specialist-failure {
+  margin: 10px 0 0;
+  color: #9a4216;
+  line-height: 1.45;
+}
+
+.hypothesis-list {
+  margin-top: 24px;
+  border-top: 1px solid #dbe3e5;
+  padding-top: 20px;
+}
+
+.hypothesis-list h3,
+.council-outcome h3 {
+  margin: 0;
+  color: #173943;
+}
+
+.hypothesis-list li {
+  display: grid;
+  gap: 5px;
+}
+
+.council-outcome {
+  margin-top: 24px;
+  border-left: 4px solid #17633c;
+  border-radius: 4px;
+  padding: 16px 18px;
+  background: #eef8f2;
+}
+
+.council-outcome p:not(.eyebrow) {
+  margin: 8px 0;
+  color: #455960;
+}
+
+.council-outcome.safe-refusal,
+.council-outcome.inconclusive {
+  border-left-color: #c76723;
+  background: #fff7f0;
+}
+
 @media (max-width: 760px) {
   .incident-shell {
     width: min(100% - 24px, 1120px);
@@ -397,6 +492,10 @@ h2 {
   }
 
   .status-dimensions {
+    grid-template-columns: 1fr;
+  }
+
+  .specialist-grid {
     grid-template-columns: 1fr;
   }
 }
