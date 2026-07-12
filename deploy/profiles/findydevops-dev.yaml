@@ -1,0 +1,153 @@
+profile_id: findydevops-dev
+project_id: findydevops
+project_number: "1019610377153"
+region: asia-northeast1
+zone: asia-northeast1-a
+resource_prefix: kc
+
+cluster:
+  name: kubecouncil-dev
+  mode: reuse-only
+  expected_context: gke_findydevops_asia-northeast1-a_kubecouncil-dev
+  minimum_version: "1.30"
+  architecture: amd64
+  minimum_allocatable_cpu_millis: 3500
+  minimum_allocatable_memory_bytes: 10737418240
+  workload_pool: findydevops.svc.id.goog
+
+artifact_registry:
+  repository: kubecouncil
+  format: DOCKER
+  prefix: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil
+
+firestore:
+  database_id: "(default)"
+  location: asia-northeast1
+  mode: FIRESTORE_NATIVE
+  delete_protection: true
+
+pubsub:
+  alerts:
+    topic: kc-alert-signals
+    subscription: kc-investigator-alerts
+    ack_deadline_seconds: 30
+    retention: 7d
+    retry_minimum: 10s
+    retry_maximum: 600s
+    dead_letter_topic: kc-alert-signals-dlq
+    dead_letter_subscription: kc-alert-signals-dlq-reader
+    maximum_delivery_attempts: 5
+  interventions:
+    topic: kc-interventions
+    subscription: kc-executor-interventions
+    ack_deadline_seconds: 60
+    retention: 7d
+    retry_minimum: 10s
+    retry_maximum: 600s
+    dead_letter_topic: kc-interventions-dlq
+    dead_letter_subscription: kc-interventions-dlq-reader
+    maximum_delivery_attempts: 5
+
+kubernetes:
+  system_namespace: kubecouncil-system
+  application_namespace: online-boutique
+  demo_control_namespace: kubecouncil-demo-control
+  service_accounts:
+    investigator:
+      name: investigator
+      namespace: kubecouncil-system
+      google_service_account: kc-investigator@findydevops.iam.gserviceaccount.com
+    executor:
+      name: executor
+      namespace: kubecouncil-system
+      google_service_account: kc-executor@findydevops.iam.gserviceaccount.com
+    scenario_controller:
+      name: scenario-controller
+      namespace: kubecouncil-demo-control
+      google_service_account: kc-scenario-controller@findydevops.iam.gserviceaccount.com
+
+identities:
+  investigator:
+    name: kc-investigator
+    email: kc-investigator@findydevops.iam.gserviceaccount.com
+    project_roles:
+      - roles/aiplatform.user
+      - roles/datastore.user
+      - roles/logging.viewer
+      - roles/monitoring.viewer
+      - roles/serviceusage.serviceUsageConsumer
+  executor:
+    name: kc-executor
+    email: kc-executor@findydevops.iam.gserviceaccount.com
+    project_roles:
+      - roles/datastore.user
+  scenario_controller:
+    name: kc-scenario-controller
+    email: kc-scenario-controller@findydevops.iam.gserviceaccount.com
+    project_roles: []
+  github_deployer:
+    name: kc-github-deployer
+    email: kc-github-deployer@findydevops.iam.gserviceaccount.com
+    project_roles:
+      - roles/container.clusterViewer
+
+images:
+  backend:
+    repository: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil/kubecouncil-backend
+    source_commit: 4e1f6a84c445faf94338f094ca7d4821da1f1ce1
+    tag: 4e1f6a84c445-live24
+    digest: sha256:2cde6d17600de23b44c399eee48da82d8a299fa515bd8ed9453351451d45b331
+    platform: linux/amd64
+    build_context: backend
+    available: true
+  frontend:
+    repository: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil/kubecouncil-frontend
+    source_commit: 4e1f6a84c445faf94338f094ca7d4821da1f1ce1
+    tag: 4e1f6a84c445
+    digest: sha256:bae6d6fa1f209d00f68e333675fe6c1b19a1ba359d5d2145ddce02620b386fb3
+    platform: linux/amd64
+    build_context: frontend
+    available: true
+  executor:
+    repository: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil/kubecouncil-executor
+    source_commit: 4e1f6a84c445faf94338f094ca7d4821da1f1ce1
+    tag: 4e1f6a84c445
+    platform: linux/amd64
+    available: false
+  scenario_controller:
+    repository: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil/kubecouncil-scenario-controller
+    source_commit: 4e1f6a84c445faf94338f094ca7d4821da1f1ce1
+    tag: 4e1f6a84c445
+    platform: linux/amd64
+    available: false
+
+github:
+  repository: nikhil-p21/kubecouncil
+  pool: github
+  provider: kubecouncil
+  provider_resource: projects/1019610377153/locations/global/workloadIdentityPools/github/providers/kubecouncil
+
+iap:
+  principal_source: operator-input
+  viewer_principals:
+    - user:nikhil.p6257@gmail.com
+  responder_principals:
+    - user:nikhil.p6257@gmail.com
+
+vertex_model: gemini-3.5-flash
+
+required_apis:
+  - container.googleapis.com
+  - artifactregistry.googleapis.com
+  - aiplatform.googleapis.com
+  - firestore.googleapis.com
+  - pubsub.googleapis.com
+  - logging.googleapis.com
+  - monitoring.googleapis.com
+  - iam.googleapis.com
+  - iamcredentials.googleapis.com
+  - sts.googleapis.com
+  - serviceusage.googleapis.com
+  - cloudresourcemanager.googleapis.com
+  - iap.googleapis.com
+  - compute.googleapis.com

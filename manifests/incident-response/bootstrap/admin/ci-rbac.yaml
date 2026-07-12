@@ -1,0 +1,47 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubecouncil-bootstrap-deployer
+  namespace: kubecouncil-system
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "serviceaccounts"]
+    verbs: ["create", "get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubecouncil-bootstrap-deployer
+  namespace: kubecouncil-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubecouncil-bootstrap-deployer
+subjects:
+  - kind: User
+    name: kc-github-deployer@findydevops.iam.gserviceaccount.com
+    apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubecouncil-bootstrap-deployer
+  namespace: kubecouncil-demo-control
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["create", "get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubecouncil-bootstrap-deployer
+  namespace: kubecouncil-demo-control
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubecouncil-bootstrap-deployer
+subjects:
+  - kind: User
+    name: kc-github-deployer@findydevops.iam.gserviceaccount.com
+    apiGroup: rbac.authorization.k8s.io

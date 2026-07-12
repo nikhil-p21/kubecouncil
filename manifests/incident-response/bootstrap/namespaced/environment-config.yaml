@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubecouncil-environment
+  namespace: kubecouncil-system
+  labels:
+    app.kubernetes.io/part-of: kubecouncil
+    kubecouncil.io/environment: findydevops-dev
+data:
+  profile-id: findydevops-dev
+  project-id: findydevops
+  project-number: "1019610377153"
+  region: asia-northeast1
+  zone: asia-northeast1-a
+  cluster-name: kubecouncil-dev
+  firestore-database: "(default)"
+  firestore-location: asia-northeast1
+  alert-topic: kc-alert-signals
+  alert-subscription: kc-investigator-alerts
+  intervention-topic: kc-interventions
+  intervention-subscription: kc-executor-interventions
+  vertex-model: gemini-3.5-flash
+  backend-image: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil/kubecouncil-backend@sha256:2cde6d17600de23b44c399eee48da82d8a299fa515bd8ed9453351451d45b331
+  frontend-image: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil/kubecouncil-frontend@sha256:bae6d6fa1f209d00f68e333675fe6c1b19a1ba359d5d2145ddce02620b386fb3

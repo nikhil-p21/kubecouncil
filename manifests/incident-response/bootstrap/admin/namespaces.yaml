@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubecouncil-system
+  labels:
+    app.kubernetes.io/part-of: kubecouncil
+    kubecouncil.io/environment: findydevops-dev
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubecouncil-demo-control
+  labels:
+    app.kubernetes.io/part-of: kubecouncil
+    app.kubernetes.io/component: demo-control
+    kubecouncil.io/environment: findydevops-dev
+    kubecouncil.io/demo-only: "true"

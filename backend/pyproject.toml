@@ -23,6 +23,9 @@ dev = [
   "types-PyYAML>=6.0.0",
 ]
 
+[project.scripts]
+kubecouncil-bootstrap = "app.bootstrap.cli:main"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

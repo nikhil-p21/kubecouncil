@@ -6,10 +6,25 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      deploy:
-        description: Deploy after verification
+      publish_images:
+        description: Build and publish immutable backend and frontend images
         required: true
-        default: "false"
+        default: false
+        type: boolean
+      deploy_bootstrap:
+        description: Apply namespaced bootstrap resources after verification
+        required: true
+        default: false
+        type: boolean
+
+env:
+  GCP_PROJECT_ID: findydevops
+  GCP_REGION: asia-northeast1
+  GKE_CLUSTER: kubecouncil-dev
+  GKE_ZONE: asia-northeast1-a
+  ARTIFACT_REGISTRY: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil
+  WORKLOAD_IDENTITY_PROVIDER: projects/1019610377153/locations/global/workloadIdentityPools/github/providers/kubecouncil
+  DEPLOYER_SERVICE_ACCOUNT: kc-github-deployer@findydevops.iam.gserviceaccount.com
 
 jobs:
   verify:
@@ -47,6 +62,12 @@ jobs:
       - name: Frontend build
         run: npm run build
         working-directory: frontend
+      - name: Render incident-response bootstrap
+        run: kubectl kustomize manifests/incident-response/bootstrap
+      - name: Reject unresolved deployment values
+        run: |
+          ! kubectl kustomize manifests/incident-response/bootstrap | grep -E \
+            'PROJECT_ID|:TAG|replace-me|PRIVATE KEY|GITHUB_TOKEN|GOOGLE_APPLICATION_CREDENTIALS|kubecouncil-rehearsal-manager'
 
   containers:
     needs: verify
@@ -56,23 +77,59 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
       - name: Build backend image
-        run: docker build -t kubecouncil-backend:${{ github.sha }} backend
+        if: ${{ !inputs.publish_images }}
+        run: docker buildx build --platform linux/amd64 --load -t kubecouncil-backend:${{ github.sha }} backend
       - name: Build frontend image
-        run: docker build -t kubecouncil-frontend:${{ github.sha }} frontend
-      - name: Push images
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy == 'true'
+        if: ${{ !inputs.publish_images }}
+        run: docker buildx build --platform linux/amd64 --load -t kubecouncil-frontend:${{ github.sha }} frontend
+      - name: Authenticate to Google Cloud
+        if: ${{ inputs.publish_images }}
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+        if: ${{ inputs.publish_images }}
+      - name: Configure Artifact Registry authentication
+        if: ${{ inputs.publish_images }}
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+      - name: Build and publish immutable images
+        if: ${{ inputs.publish_images }}
         run: |
-          echo "Configure Artifact Registry auth before enabling image push."
-          exit 1
+          docker buildx build --platform linux/amd64 --push \
+            -t "${ARTIFACT_REGISTRY}/kubecouncil-backend:${GITHUB_SHA}" backend
+          docker buildx build --platform linux/amd64 --push \
+            -t "${ARTIFACT_REGISTRY}/kubecouncil-frontend:${GITHUB_SHA}" frontend
 
-  deploy:
-    needs: containers
+  deploy-bootstrap:
+    needs: [verify, containers]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_bootstrap }}
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy == 'true'
+    environment: gke-dev
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
-      - name: Deploy
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_ZONE }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+      - name: Verify namespace-local deployment authority
         run: |
-          echo "Configure GKE credentials and image substitution before enabling deploy."
-          exit 1
+          kubectl auth can-i patch configmaps -n kubecouncil-system
+          kubectl auth can-i patch serviceaccounts -n kubecouncil-demo-control
+      - name: Server-side dry-run
+        run: |
+          kubectl apply -k manifests/incident-response/bootstrap/namespaced \
+            --server-side --dry-run=server
+      - name: Apply namespaced bootstrap resources
+        run: kubectl apply -k manifests/incident-response/bootstrap/namespaced --server-side
