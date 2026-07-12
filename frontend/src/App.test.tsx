@@ -293,6 +293,36 @@ describe("App", () => {
     expect(screenText()).toContain("Checkout · 120 requests · availability pass · latency pass");
   });
 
+  it.each([
+    ["monitoring", "succeeded", "Intervention: Monitoring", "recovery and stabilization are still in progress"],
+    ["rolled_back", "rolled_back", "Intervention: Rolled Back", "restored to its prior replica count"],
+    ["failed", "failed", "Intervention: Failed", "requires operator escalation"],
+    ["safe_halted", "safe_halted", "Intervention: Safely Halted", "stopped all further writes"],
+  ] as const)(
+    "distinguishes the %s Intervention outcome without changing lifecycle",
+    async (outcome, state, status, explanation) => {
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
+        const path = typeof input === "string" ? input : input.toString();
+        if (path === "/api/identity/me") {
+          return jsonResponse(responderIdentity());
+        }
+        if (path === "/api/incidents") {
+          return jsonResponse(interventionIncidentRecord(outcome, state));
+        }
+        return jsonResponse([managedApplication()]);
+      });
+      renderApp();
+
+      await act(async () => {});
+      await act(async () => buttonByName("Open fake incident").click());
+
+      expect(screenText()).toContain("Lifecycle: Mitigating");
+      expect(screenText()).toContain(status);
+      expect(screenText()).toContain("Intervention execution");
+      expect(screenText()).toContain(explanation);
+    },
+  );
+
   it("keeps Viewer identity read-only", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
       const path = typeof input === "string" ? input : input.toString();
@@ -636,6 +666,32 @@ function monitoringIncidentRecord() {
       intervention_outcome: "monitoring",
     },
     recovery_assessments: [],
+  };
+}
+
+function interventionIncidentRecord(
+  outcome: "monitoring" | "rolled_back" | "failed" | "safe_halted",
+  state: "succeeded" | "rolled_back" | "failed" | "safe_halted",
+) {
+  const record = investigatedIncidentRecord();
+  return {
+    ...record,
+    incident: {
+      ...record.incident,
+      lifecycle: "mitigating",
+      intervention_outcome: outcome,
+    },
+    interventions: [
+      {
+        intervention_id: "intervention-1",
+        target: {
+          namespace: "online-boutique",
+          name: "recommendationservice",
+        },
+        state,
+        requested_at: "2026-07-11T00:04:00Z",
+      },
+    ],
   };
 }
 

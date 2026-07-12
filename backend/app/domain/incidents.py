@@ -114,8 +114,17 @@ class InterventionState(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
+    ROLLED_BACK = "rolled_back"
     FAILED = "failed"
     SAFE_HALTED = "safe_halted"
+
+
+class ActionConvergenceStatus(StrEnum):
+    """Deterministic Executor view of post-mutation Deployment convergence."""
+
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    AMBIGUOUS = "ambiguous"
 
 
 class WorkloadReference(KubeCouncilModel):
@@ -893,6 +902,20 @@ class DeploymentPatch(KubeCouncilModel):
     body: dict[str, object]
 
 
+class DeploymentConvergenceResult(KubeCouncilModel):
+    """Action convergence result that keeps definitive failure separate from uncertainty."""
+
+    status: ActionConvergenceStatus
+    reason: str = Field(min_length=1)
+    observed_state: DeploymentPolicyState | None = None
+
+    @model_validator(mode="after")
+    def definitive_results_include_observed_state(self) -> "DeploymentConvergenceResult":
+        if self.status is not ActionConvergenceStatus.AMBIGUOUS and self.observed_state is None:
+            raise ValueError("definitive convergence results require observed Deployment state")
+        return self
+
+
 class DryRunResult(KubeCouncilModel):
     accepted: bool
     diff: str | None = None
@@ -1404,6 +1427,12 @@ class ExecutorKubernetesProvider(PolicyKubernetesProvider, Protocol):
     """Narrow mutation boundary available only to the deterministic Executor."""
 
     def apply_deployment_patch(self, patch: DeploymentPatch) -> DeploymentPolicyState: ...
+
+    def verify_deployment_convergence(
+        self,
+        patch: DeploymentPatch,
+        applied_state: DeploymentPolicyState,
+    ) -> DeploymentConvergenceResult: ...
 
 
 class WorkloadLeaseStore(Protocol):

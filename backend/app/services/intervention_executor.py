@@ -1,4 +1,4 @@
-"""Deterministic, non-HTTP rollback Executor with no model or evidence-query access."""
+"""Deterministic, non-HTTP Intervention Executor with action-specific failure semantics."""
 
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -6,19 +6,28 @@ from uuid import uuid4
 
 from app.domain.approval import approval_matches_record
 from app.domain.incidents import (
+    ActionConvergenceStatus,
     ApprovalDecision,
     AuditEvent,
+    DeploymentConvergenceResult,
     DeploymentPatch,
     DeploymentPolicyState,
+    DeploymentRevision,
     EnrollmentProvider,
     ExecutorKubernetesProvider,
     IncidentStore,
     Intervention,
     InterventionRequest,
     InterventionState,
+    InvestigationRecord,
     PolicyKubernetesProvider,
     PolicyStatus,
+    RemediationAction,
+    RemediationProposal,
+    RestartDeploymentAction,
     RollbackDeploymentAction,
+    ScaleDeploymentAction,
+    WorkloadLease,
     WorkloadLeaseStore,
     WorkloadReference,
 )
@@ -33,8 +42,8 @@ class InterventionExecutionError(RuntimeError):
     """Raised when the Executor cannot prove that the approved mutation remains safe."""
 
 
-class RollbackInterventionExecutor:
-    """Consumes one approved rollback without exposing an API or adaptive tool surface."""
+class DeterministicInterventionExecutor:
+    """Consumes one approved action without exposing an API or adaptive tool surface."""
 
     def __init__(
         self,
@@ -56,7 +65,7 @@ class RollbackInterventionExecutor:
         store: IncidentStore,
         request: InterventionRequest,
     ) -> Intervention:
-        """Revalidate, dry-run, mutate, and record one idempotent rollback request."""
+        """Revalidate, dry-run, mutate, verify, and record one idempotent request."""
 
         now = self._clock()
         record = store.get(request.incident_id)
@@ -103,6 +112,15 @@ class RollbackInterventionExecutor:
             now=now,
         )
         if lease is None:
+            store.append_audit_event(
+                request.incident_id,
+                self._event(
+                    request,
+                    "intervention_refused",
+                    now,
+                    reason="another Intervention holds the Managed Workload",
+                ),
+            )
             raise InterventionExecutionError("another Intervention holds the Managed Workload")
 
         claimed = False
@@ -124,8 +142,6 @@ class RollbackInterventionExecutor:
                 raise InterventionExecutionError("Intervention Approval is stale")
             if proposal is None or policy is None or policy.status is not PolicyStatus.PASSED:
                 raise InterventionExecutionError("Intervention policy authority is invalid")
-            if not isinstance(proposal.action, RollbackDeploymentAction):
-                raise InterventionExecutionError("this Executor accepts rollback actions only")
             if (
                 proposal.proposal_id != request.proposal_id
                 or proposal.action.target != request.target
@@ -134,6 +150,19 @@ class RollbackInterventionExecutor:
                 raise InterventionExecutionError(
                     "Intervention request differs from reviewed policy"
                 )
+
+            store.record_intervention(
+                request.incident_id,
+                record.incident.version,
+                intervention,
+                self._event(
+                    request,
+                    "intervention_claimed",
+                    now,
+                    action_type=proposal.action.action_type,
+                ),
+            )
+            claimed = True
 
             state = self._kubernetes.inspect_deployment(request.target)
             if state is None:
@@ -161,14 +190,15 @@ class RollbackInterventionExecutor:
                 raise InterventionExecutionError(
                     "Executor policy revalidation rejected the request"
                 )
-
-            store.record_intervention(
+            store.append_audit_event(
                 request.incident_id,
-                record.incident.version,
-                intervention,
-                self._event(request, "intervention_validated", now),
+                self._event(
+                    request,
+                    "intervention_validated",
+                    self._clock(),
+                    action_type=proposal.action.action_type,
+                ),
             )
-            claimed = True
             store.append_audit_event(
                 request.incident_id,
                 self._event(
@@ -188,15 +218,36 @@ class RollbackInterventionExecutor:
                     self._clock(),
                     resource_version=applied.resource_version,
                     generation=str(applied.generation),
+                    action_type=proposal.action.action_type,
                 ),
             )
-            if (
-                applied.target != request.target
-                or applied.current_revision != proposal.action.revision
-                or applied.generation <= state.generation
+            convergence = self._kubernetes.verify_deployment_convergence(
+                request.patch,
+                applied,
+            )
+            if convergence.status is ActionConvergenceStatus.AMBIGUOUS:
+                raise InterventionExecutionError(
+                    f"Deployment convergence is ambiguous: {convergence.reason}"
+                )
+            if convergence.status is ActionConvergenceStatus.FAILED:
+                return self._handle_action_failure(
+                    store,
+                    intervention,
+                    request,
+                    record,
+                    proposal,
+                    state,
+                    convergence,
+                    lease,
+                )
+            if convergence.observed_state is None or not self._action_converged(
+                proposal.action,
+                state,
+                convergence.observed_state,
             ):
                 raise InterventionExecutionError(
-                    "rollback did not converge to the approved revision"
+                    "Deployment convergence is ambiguous: observed state does not match the "
+                    "approved action"
                 )
             completed = intervention.model_copy(update={"state": InterventionState.SUCCEEDED})
             store.update_intervention(
@@ -206,35 +257,244 @@ class RollbackInterventionExecutor:
                     request,
                     "intervention_converged",
                     self._clock(),
-                    revision=str(applied.current_revision),
+                    action_type=proposal.action.action_type,
+                    revision=str(convergence.observed_state.current_revision),
+                    replicas=str(convergence.observed_state.replicas),
                 ),
             )
             return completed
         except (ValueError, KeyError) as error:
             if claimed:
-                self._record_failure(store, intervention, request, str(error))
+                self._record_safe_halt(store, intervention, request, str(error))
+            else:
+                self._record_refusal(store, request, str(error))
             raise InterventionExecutionError(str(error)) from error
-        except InterventionExecutionError:
+        except InterventionExecutionError as error:
             if claimed:
-                self._record_failure(store, intervention, request, "safety revalidation failed")
+                self._record_safe_halt(store, intervention, request, str(error))
+            else:
+                self._record_refusal(store, request, str(error))
             raise
         finally:
-            self._leases.release(lease)
+            try:
+                self._leases.release(lease)
+            except ValueError as error:
+                store.append_audit_event(
+                    request.incident_id,
+                    self._event(
+                        request,
+                        "intervention_lease_release_skipped",
+                        self._clock(),
+                        reason=str(error),
+                    ),
+                )
 
-    def _record_failure(
+    def _handle_action_failure(
         self,
         store: IncidentStore,
         intervention: Intervention,
         request: InterventionRequest,
-        reason: str,
-    ) -> None:
+        record: InvestigationRecord,
+        proposal: RemediationProposal,
+        previous_state: DeploymentPolicyState,
+        convergence: DeploymentConvergenceResult,
+        lease: WorkloadLease,
+    ) -> Intervention:
+        store.append_audit_event(
+            request.incident_id,
+            self._event(
+                request,
+                "intervention_action_failed",
+                self._clock(),
+                action_type=proposal.action.action_type,
+                reason=convergence.reason,
+            ),
+        )
+        if isinstance(proposal.action, ScaleDeploymentAction):
+            return self._restore_failed_scale(
+                store,
+                intervention,
+                request,
+                record,
+                proposal,
+                previous_state,
+                convergence,
+                lease,
+            )
+
+        restoration = (
+            "forbidden: the prior revision is implicated in this Incident"
+            if isinstance(proposal.action, RollbackDeploymentAction)
+            else "unavailable: controlled restart has no inverse mutation"
+        )
         failed = intervention.model_copy(update={"state": InterventionState.FAILED})
         store.update_intervention(
             request.incident_id,
             failed,
             self._event(
                 request,
-                "intervention_failed",
+                "intervention_escalated",
+                self._clock(),
+                action_type=proposal.action.action_type,
+                reason=convergence.reason,
+                restoration=restoration,
+            ),
+        )
+        return failed
+
+    def _restore_failed_scale(
+        self,
+        store: IncidentStore,
+        intervention: Intervention,
+        request: InterventionRequest,
+        record: InvestigationRecord,
+        proposal: RemediationProposal,
+        previous_state: DeploymentPolicyState,
+        convergence: DeploymentConvergenceResult,
+        lease: WorkloadLease,
+    ) -> Intervention:
+        observed = convergence.observed_state
+        current = self._kubernetes.inspect_deployment(request.target)
+        if observed is None or current != observed:
+            raise InterventionExecutionError(
+                "scale restoration stopped because current Deployment state is ambiguous"
+            )
+        restoration_proposal = proposal.model_copy(
+            update={
+                "proposal_id": f"{proposal.proposal_id}-restore-{intervention.intervention_id}",
+                "action": ScaleDeploymentAction(
+                    target=proposal.action.target,
+                    replicas=previous_state.replicas,
+                ),
+            }
+        )
+        decision = DeterministicProposalPolicy(
+            self._kubernetes,
+            self._enrollment,
+        ).evaluate(record, restoration_proposal)
+        if decision.status is not PolicyStatus.PASSED or decision.patch is None:
+            raise InterventionExecutionError("scale restoration policy rejected the inverse patch")
+        store.append_audit_event(
+            request.incident_id,
+            self._event(
+                request,
+                "intervention_restoration_validated",
+                self._clock(),
+                replicas=str(previous_state.replicas),
+                dry_run_diff=decision.dry_run_diff or "",
+            ),
+        )
+        self._leases.renew(lease, now=self._clock())
+        restored = self._kubernetes.apply_deployment_patch(decision.patch)
+        store.append_audit_event(
+            request.incident_id,
+            self._event(
+                request,
+                "intervention_restoration_mutated",
+                self._clock(),
+                replicas=str(previous_state.replicas),
+                resource_version=restored.resource_version,
+            ),
+        )
+        restoration_convergence = self._kubernetes.verify_deployment_convergence(
+            decision.patch,
+            restored,
+        )
+        restoration_action = restoration_proposal.action
+        if (
+            restoration_convergence.status is not ActionConvergenceStatus.SUCCEEDED
+            or restoration_convergence.observed_state is None
+            or not self._action_converged(
+                restoration_action,
+                current,
+                restoration_convergence.observed_state,
+            )
+        ):
+            raise InterventionExecutionError(
+                "scale restoration convergence is ambiguous; no further writes are allowed"
+            )
+        rolled_back = intervention.model_copy(
+            update={"state": InterventionState.ROLLED_BACK}
+        )
+        store.update_intervention(
+            request.incident_id,
+            rolled_back,
+            self._event(
+                request,
+                "intervention_restored",
+                self._clock(),
+                replicas=str(previous_state.replicas),
+                reason=convergence.reason,
+            ),
+        )
+        return rolled_back
+
+    @staticmethod
+    def _action_converged(
+        action: RemediationAction,
+        previous: DeploymentPolicyState,
+        observed: DeploymentPolicyState,
+    ) -> bool:
+        if (
+            observed.target != action.target
+            or observed.resource_version == previous.resource_version
+            or observed.generation <= previous.generation
+        ):
+            return False
+        if isinstance(action, RollbackDeploymentAction):
+            return observed.current_revision == action.revision
+        if isinstance(action, ScaleDeploymentAction):
+            return (
+                observed.replicas == action.replicas
+                and observed.current_revision == previous.current_revision
+            )
+        if isinstance(action, RestartDeploymentAction):
+            return observed.current_revision > previous.current_revision
+        return False
+
+    def _record_safe_halt(
+        self,
+        store: IncidentStore,
+        intervention: Intervention,
+        request: InterventionRequest,
+        reason: str,
+    ) -> None:
+        current = store.get(request.incident_id)
+        if current is None:
+            return
+        stored = next(
+            (
+                item
+                for item in current.interventions
+                if item.intervention_id == intervention.intervention_id
+            ),
+            None,
+        )
+        if stored is None or stored.state is not InterventionState.RUNNING:
+            return
+        safe_halted = intervention.model_copy(update={"state": InterventionState.SAFE_HALTED})
+        store.update_intervention(
+            request.incident_id,
+            safe_halted,
+            self._event(
+                request,
+                "intervention_safe_halted",
+                self._clock(),
+                reason=reason,
+            ),
+        )
+
+    def _record_refusal(
+        self,
+        store: IncidentStore,
+        request: InterventionRequest,
+        reason: str,
+    ) -> None:
+        store.append_audit_event(
+            request.incident_id,
+            self._event(
+                request,
+                "intervention_refused",
                 self._clock(),
                 reason=reason,
             ),
@@ -273,6 +533,8 @@ class FakeExecutorKubernetesProvider(FakePolicyKubernetesProvider):
         super().__init__(states, dry_run_error=dry_run_error)
         self._applied_patches: list[DeploymentPatch] = []
         self._external_resource_version: str | None = None
+        self._convergence_results: list[ActionConvergenceStatus] = []
+        self._quota_headroom_after_next_apply: int | None = None
 
     @classmethod
     def ready(
@@ -314,6 +576,21 @@ class FakeExecutorKubernetesProvider(FakePolicyKubernetesProvider):
 
         self._external_resource_version = resource_version
 
+    def set_convergence_results(self, *statuses: ActionConvergenceStatus) -> None:
+        """Set deterministic post-apply outcomes for action and restoration tests."""
+
+        self._convergence_results = list(statuses)
+
+    def set_quota_headroom_after_next_apply(self, headroom: int) -> None:
+        """Change current quota facts after one write to exercise restoration policy."""
+
+        self._quota_headroom_after_next_apply = headroom
+
+    def reject_future_dry_runs(self, reason: str) -> None:
+        """Make subsequent Executor-side policy dry-runs fail closed."""
+
+        self._dry_run_error = reason  # noqa: SLF001 - explicit mutable provider fake control
+
     def apply_deployment_patch(self, patch: DeploymentPatch) -> DeploymentPolicyState:
         state = self.inspect_deployment(patch.target)
         if state is None:
@@ -330,26 +607,80 @@ class FakeExecutorKubernetesProvider(FakePolicyKubernetesProvider):
         if not dry_run.accepted:
             raise ValueError(dry_run.error or "server-side dry-run rejected the patch")
         spec = patch.body.get("spec")
-        template = spec.get("template") if isinstance(spec, dict) else None
-        metadata = template.get("metadata") if isinstance(template, dict) else None
-        labels = metadata.get("labels") if isinstance(metadata, dict) else None
-        revision = labels.get("revision") if isinstance(labels, dict) else None
-        if patch.action_type != "rollback_deployment" or not isinstance(revision, str):
-            raise ValueError("Executor received a non-rollback Deployment patch")
-        updated = state.model_copy(
-            update={
-                "resource_version": f"{state.resource_version}-rollback",
-                "generation": state.generation + 1,
-                "current_revision": int(revision),
-            }
-        )
+        if not isinstance(spec, dict):
+            raise ValueError("Executor received a malformed Deployment patch")
+        updates: dict[str, object] = {
+            "resource_version": f"{state.resource_version}-{patch.action_type}",
+            "generation": state.generation + 1,
+        }
+        if patch.action_type == "rollback_deployment":
+            template = spec.get("template")
+            metadata = template.get("metadata") if isinstance(template, dict) else None
+            labels = metadata.get("labels") if isinstance(metadata, dict) else None
+            revision = labels.get("revision") if isinstance(labels, dict) else None
+            if not isinstance(revision, str):
+                raise ValueError("rollback patch has no exact revision template")
+            updates["current_revision"] = int(revision)
+        elif patch.action_type == "scale_deployment":
+            replicas = spec.get("replicas")
+            if not isinstance(replicas, int):
+                raise ValueError("scale patch has no exact replica count")
+            updates["replicas"] = replicas
+        elif patch.action_type == "restart_deployment":
+            template = spec.get("template")
+            metadata = template.get("metadata") if isinstance(template, dict) else None
+            annotations = metadata.get("annotations") if isinstance(metadata, dict) else None
+            token = (
+                annotations.get("kubecouncil.io/restart-token")
+                if isinstance(annotations, dict)
+                else None
+            )
+            if not isinstance(token, str):
+                raise ValueError("restart patch has no exact restart token")
+            next_revision = state.current_revision + 1
+            updates["current_revision"] = next_revision
+            updates["available_revisions"] = (
+                *state.available_revisions,
+                DeploymentRevision(
+                    revision=next_revision,
+                    pod_template={"metadata": {"annotations": {"restart-token": token}}},
+                ),
+            )
+        if self._quota_headroom_after_next_apply is not None:
+            updates["replica_quota_headroom"] = self._quota_headroom_after_next_apply
+            self._quota_headroom_after_next_apply = None
+        updated = state.model_copy(update=updates)
         self._states[patch.target] = updated  # noqa: SLF001 - mutable Kubernetes fake
         self._applied_patches.append(patch)
         return updated
 
+    def verify_deployment_convergence(
+        self,
+        patch: DeploymentPatch,
+        applied_state: DeploymentPolicyState,
+    ) -> DeploymentConvergenceResult:
+        current = self.inspect_deployment(patch.target)
+        status = (
+            self._convergence_results.pop(0)
+            if self._convergence_results
+            else ActionConvergenceStatus.SUCCEEDED
+        )
+        reasons = {
+            ActionConvergenceStatus.SUCCEEDED: "Deployment reached the action-specific state.",
+            ActionConvergenceStatus.FAILED: "Deployment reported a definitive action failure.",
+            ActionConvergenceStatus.AMBIGUOUS: (
+                "Deployment convergence could not be established deterministically."
+            ),
+        }
+        return DeploymentConvergenceResult(
+            status=status,
+            reason=reasons[status],
+            observed_state=current,
+        )
+
 
 __all__ = [
+    "DeterministicInterventionExecutor",
     "FakeExecutorKubernetesProvider",
     "InterventionExecutionError",
-    "RollbackInterventionExecutor",
 ]

@@ -14,12 +14,17 @@ from app.domain.incidents import (
     AlertSignal,
     AlertSignalEvidence,
     ApprovalDecision,
+    CoordinatorRequest,
     CriticalJourneyObservation,
     DeploymentRecoveryObservation,
     IncidentLifecycle,
     IncidentStore,
     InterventionOutcome,
+    ModelResponse,
     RecoveryObservation,
+    RemediationAction,
+    RestartDeploymentAction,
+    ScaleDeploymentAction,
     SyntheticProbeObservation,
 )
 from app.services.approval import ApprovalService
@@ -27,8 +32,8 @@ from app.services.council import BoundedIncidentCouncil, FakeIncidentCouncilMode
 from app.services.evidence import DeterministicEvidenceRedactor, InitialEvidenceWindowCollector
 from app.services.incident_store import FirestoreIncidentStore, InMemoryDocumentDatabase
 from app.services.intervention_executor import (
+    DeterministicInterventionExecutor,
     FakeExecutorKubernetesProvider,
-    RollbackInterventionExecutor,
 )
 from app.services.intervention_queue import InMemoryInterventionQueue
 from app.services.proposal_policy import DeterministicProposalPolicy
@@ -176,6 +181,53 @@ def test_application_metrics_must_meet_profile_and_healthy_baseline() -> None:
     assert assessment.criteria_satisfied is False
 
 
+@pytest.mark.parametrize(
+    ("action", "observation"),
+    (
+        (
+            ScaleDeploymentAction(
+                target=fake_application_profile().workloads[0].reference,
+                replicas=4,
+            ),
+            {
+                "active_revision": 8,
+                "desired_replicas": 4,
+                "updated_replicas": 4,
+                "available_replicas": 4,
+            },
+        ),
+        (
+            RestartDeploymentAction(
+                target=fake_application_profile().workloads[0].reference,
+                restart_token="incident-recovery-restart",
+            ),
+            {
+                "active_revision": 9,
+                "desired_replicas": 3,
+                "updated_replicas": 3,
+                "available_replicas": 3,
+            },
+        ),
+    ),
+)
+def test_scale_and_restart_use_the_same_recovery_verification_path(
+    action: RemediationAction,
+    observation: dict[str, int],
+) -> None:
+    store, incident_id, clock = _monitoring_incident(action=action)
+    verifier = DeterministicRecoveryVerifier(
+        FakeRecoveryEvidenceProvider((_healthy_observation(**observation),)),
+        FakeSyntheticProbeRunner(),
+        clock=clock,
+    )
+
+    assessment = verifier.verify_next_window(store, incident_id)
+
+    assert assessment.kubernetes_converged is True
+    assert assessment.criteria_satisfied is True
+    assert assessment.stable_windows == 1
+
+
 def test_provider_alert_closure_cannot_resolve_a_monitoring_incident() -> None:
     store, incident_id, clock = _monitoring_incident()
     record = store.get(incident_id)
@@ -219,6 +271,8 @@ class MutableClock:
 
 def _monitoring_incident(
     store: IncidentStore | None = None,
+    *,
+    action: RemediationAction | None = None,
 ) -> tuple[IncidentStore, str, MutableClock]:
     store = store or InMemoryIncidentStore()
     now = datetime.now(UTC)
@@ -242,10 +296,11 @@ def _monitoring_incident(
         signal=signal,
         window=record.evidence_window,
     )
+    council_model = (
+        _ActionCouncilModel(action) if action is not None else FakeIncidentCouncilModel()
+    )
     asyncio.run(
-        BoundedIncidentCouncil(FakeIncidentCouncilModel()).investigate(
-            store, record.incident.incident_id
-        )
+        BoundedIncidentCouncil(council_model).investigate(store, record.incident.incident_id)
     )
     kubernetes = FakeExecutorKubernetesProvider.ready()
     enrollment = FakeEnrollmentProvider.ready_for(profile)
@@ -262,7 +317,7 @@ def _monitoring_incident(
         decision=ApprovalDecision.APPROVED,
         reviewed_binding=review.binding,
     )
-    executor = RollbackInterventionExecutor(
+    executor = DeterministicInterventionExecutor(
         kubernetes=kubernetes,
         enrollment=enrollment,
         leases=FirestoreWorkloadLeaseStore(InMemoryLeaseDatabase()),
@@ -277,7 +332,9 @@ def _healthy_observation(
     *,
     observed_generation: int = 10,
     active_revision: int = 7,
+    desired_replicas: int = 2,
     updated_replicas: int = 2,
+    available_replicas: int = 2,
     unavailable_replicas: int = 0,
     oom_terminations: int = 0,
     restart_delta: int = 0,
@@ -291,9 +348,9 @@ def _healthy_observation(
             generation=10,
             observed_generation=observed_generation,
             active_revision=active_revision,
-            desired_replicas=2,
+            desired_replicas=desired_replicas,
             updated_replicas=updated_replicas,
-            available_replicas=2,
+            available_replicas=available_replicas,
             unavailable_replicas=unavailable_replicas,
             oom_terminations=oom_terminations,
             restart_delta=restart_delta,
@@ -307,6 +364,18 @@ def _healthy_observation(
             healthy_baseline_p95_latency_ms=900,
         ),
     )
+
+
+class _ActionCouncilModel(FakeIncidentCouncilModel):
+    def __init__(self, action: RemediationAction) -> None:
+        self._action = action
+
+    async def coordinate(self, request: CoordinatorRequest) -> ModelResponse:
+        response = await super().coordinate(request)
+        proposal = response.output.get("proposal")
+        assert isinstance(proposal, dict)
+        proposal["action"] = self._action.model_dump(mode="json")
+        return response
 
 
 def _responder() -> OperatorIdentity:

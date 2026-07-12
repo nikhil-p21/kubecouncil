@@ -16,9 +16,9 @@ from app.services.council import BoundedIncidentCouncil, FakeIncidentCouncilMode
 from app.services.evidence import DeterministicEvidenceRedactor, InitialEvidenceWindowCollector
 from app.services.incident_store import FirestoreIncidentStore, InMemoryDocumentDatabase
 from app.services.intervention_executor import (
+    DeterministicInterventionExecutor,
     FakeExecutorKubernetesProvider,
     InterventionExecutionError,
-    RollbackInterventionExecutor,
 )
 from app.services.intervention_queue import (
     InMemoryInterventionQueue,
@@ -58,7 +58,7 @@ def test_approved_rollback_crosses_queue_and_executes_once_after_revalidation(
     assert request.approval_id == approved.approvals[0].approval_id
 
     executor_kubernetes = FakeExecutorKubernetesProvider.from_policy_provider(kubernetes)
-    executor = RollbackInterventionExecutor(
+    executor = DeterministicInterventionExecutor(
         kubernetes=executor_kubernetes,
         enrollment=enrollment,
         leases=FirestoreWorkloadLeaseStore(InMemoryLeaseDatabase()),
@@ -79,6 +79,7 @@ def test_approved_rollback_crosses_queue_and_executes_once_after_revalidation(
     ] == [
         "intervention_requested",
         "intervention_received",
+        "intervention_claimed",
         "intervention_validated",
         "intervention_dry_run_passed",
         "intervention_mutated",
@@ -105,7 +106,7 @@ def test_executor_rejects_workload_state_that_changed_after_approval() -> None:
     stale_kubernetes = FakeExecutorKubernetesProvider(
         (state.model_copy(update={"resource_version": "rv-external"}),)
     )
-    executor = RollbackInterventionExecutor(
+    executor = DeterministicInterventionExecutor(
         kubernetes=stale_kubernetes,
         enrollment=enrollment,
         leases=FirestoreWorkloadLeaseStore(InMemoryLeaseDatabase()),
@@ -118,7 +119,8 @@ def test_executor_rejects_workload_state_that_changed_after_approval() -> None:
     assert stale_kubernetes.applied_patches == ()
     rejected = store.get(request.incident_id)
     assert rejected is not None
-    assert rejected.interventions == ()
+    assert rejected.interventions[0].state.value == "safe_halted"
+    assert rejected.incident.intervention_outcome.value == "safe_halted"
 
 
 def test_rejected_human_decision_never_publishes_an_intervention() -> None:
@@ -158,7 +160,7 @@ def test_executor_rejects_tampered_authority_even_with_a_rehashed_message() -> N
     request = queue.pending()[0].model_copy(update={"approval_id": "approval-attacker"})
     request = request.model_copy(update={"payload_hash": intervention_request_hash(request)})
     executor_kubernetes = FakeExecutorKubernetesProvider.from_policy_provider(kubernetes)
-    executor = RollbackInterventionExecutor(
+    executor = DeterministicInterventionExecutor(
         kubernetes=executor_kubernetes,
         enrollment=enrollment,
         leases=FirestoreWorkloadLeaseStore(InMemoryLeaseDatabase()),
@@ -187,7 +189,7 @@ def test_external_mutation_between_revalidation_and_apply_fails_optimistic_concu
     request = queue.pending()[0]
     executor_kubernetes = FakeExecutorKubernetesProvider.from_policy_provider(kubernetes)
     executor_kubernetes.mutate_before_next_apply(resource_version="rv-racing-writer")
-    executor = RollbackInterventionExecutor(
+    executor = DeterministicInterventionExecutor(
         kubernetes=executor_kubernetes,
         enrollment=enrollment,
         leases=FirestoreWorkloadLeaseStore(InMemoryLeaseDatabase()),
@@ -200,7 +202,8 @@ def test_external_mutation_between_revalidation_and_apply_fails_optimistic_concu
     assert executor_kubernetes.applied_patches == ()
     failed = store.get(request.incident_id)
     assert failed is not None
-    assert failed.interventions[0].state.value == "failed"
+    assert failed.interventions[0].state.value == "safe_halted"
+    assert failed.incident.intervention_outcome.value == "safe_halted"
 
 
 def test_duplicate_delivery_returns_completed_intervention_without_a_second_write() -> None:
@@ -218,7 +221,7 @@ def test_duplicate_delivery_returns_completed_intervention_without_a_second_writ
     )
     request = queue.pending()[0]
     executor_kubernetes = FakeExecutorKubernetesProvider.from_policy_provider(kubernetes)
-    executor = RollbackInterventionExecutor(
+    executor = DeterministicInterventionExecutor(
         kubernetes=executor_kubernetes,
         enrollment=enrollment,
         leases=FirestoreWorkloadLeaseStore(InMemoryLeaseDatabase()),

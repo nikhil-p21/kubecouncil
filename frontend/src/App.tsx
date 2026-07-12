@@ -4,6 +4,7 @@ import "./App.css";
 
 type Outcome = "not_started" | "proposal_ready" | "needs_more_evidence" | "no_safe_action" | "inconclusive";
 type InterventionOutcome = "not_started" | "monitoring" | "succeeded" | "rolled_back" | "failed" | "safe_halted";
+type InterventionState = "pending" | "running" | "succeeded" | "rolled_back" | "failed" | "safe_halted";
 type SpecialistRole = "health" | "logs" | "metrics" | "change";
 type OperatorIdentity = { principal: string; subject: string; role: "viewer" | "responder" };
 
@@ -133,6 +134,12 @@ type IncidentRecord = {
     decision: "approved" | "rejected";
     decided_at: string;
   }>;
+  interventions: Array<{
+    intervention_id: string;
+    target: { namespace: string; name: string };
+    state: InterventionState;
+    requested_at: string;
+  }>;
   recovery_assessments: Array<{
     intervention_id: string;
     window_started_at: string;
@@ -200,6 +207,10 @@ class ApiRequestError extends Error {}
 
 function titleCase(value: string): string {
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function interventionLabel(value: InterventionOutcome | InterventionState): string {
+  return value === "safe_halted" ? "Safely Halted" : titleCase(value);
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -575,7 +586,7 @@ function IncidentDetail({
           </div>
           <div>
             <dt>Intervention</dt>
-            <dd>Intervention: {titleCase(incident.intervention_outcome)}</dd>
+            <dd>Intervention: {interventionLabel(incident.intervention_outcome)}</dd>
           </div>
         </dl>
       </article>
@@ -617,6 +628,8 @@ function IncidentDetail({
             <li key={event.event_id}>
               <strong>{event.event_type}</strong> · {event.actor} · {new Date(event.occurred_at).toLocaleString()}
               {event.details?.specialist ? ` · ${titleCase(event.details.specialist)} Specialist` : ""}
+              {event.details?.reason ? ` · ${event.details.reason}` : ""}
+              {event.details?.restoration ? ` · Restoration ${event.details.restoration}` : ""}
             </li>
           ))}
         </ol>
@@ -666,6 +679,10 @@ function IncidentDetail({
         <RecoveryDetail record={record} />
       ) : null}
 
+      {record.interventions.length || incident.intervention_outcome !== "not_started" ? (
+        <InterventionDetail record={record} />
+      ) : null}
+
       {incident.investigation_outcome !== "not_started" ? (
         <CouncilDetail
           approvalReview={approvalReview}
@@ -676,6 +693,46 @@ function IncidentDetail({
         />
       ) : null}
     </section>
+  );
+}
+
+function InterventionDetail({ record }: { record: IncidentRecord }) {
+  const latest = record.interventions.at(-1);
+  const action = record.proposal?.action;
+  const actionDetail = action
+    ? action.action_type === "rollback_deployment"
+      ? `Rollback to revision ${action.revision}`
+      : action.action_type === "scale_deployment"
+        ? `Scale to ${action.replicas} replicas`
+        : "Controlled restart"
+    : "No executable action recorded";
+  return (
+    <article className="incident-card intervention-detail">
+      <div className="timeline-heading">
+        <h2>Intervention execution</h2>
+        <span>{interventionLabel(record.incident.intervention_outcome)}</span>
+      </div>
+      <p>{actionDetail}</p>
+      {latest ? (
+        <p>
+          {latest.target.namespace}/{latest.target.name} · Executor state {interventionLabel(latest.state)}
+        </p>
+      ) : (
+        <p>The approved mutation is awaiting a durable Executor record.</p>
+      )}
+      {record.incident.intervention_outcome === "monitoring" ? (
+        <small>Mutation converged; deterministic recovery and stabilization are still in progress.</small>
+      ) : null}
+      {record.incident.intervention_outcome === "rolled_back" ? (
+        <small>The failed scale was restored to its prior replica count after a fresh policy check.</small>
+      ) : null}
+      {record.incident.intervention_outcome === "failed" ? (
+        <small>The action failed and requires operator escalation; no inverse action was invented.</small>
+      ) : null}
+      {record.incident.intervention_outcome === "safe_halted" ? (
+        <small>Safety became stale or ambiguous, so the Executor stopped all further writes.</small>
+      ) : null}
+    </article>
   );
 }
 

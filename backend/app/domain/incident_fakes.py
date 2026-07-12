@@ -706,6 +706,8 @@ class InMemoryIncidentStore(IncidentStore):
             if intervention.state is InterventionState.SUCCEEDED:
                 lifecycle = IncidentLifecycle.MONITORING
                 outcome = InterventionOutcome.MONITORING
+            elif intervention.state is InterventionState.ROLLED_BACK:
+                outcome = InterventionOutcome.ROLLED_BACK
             elif intervention.state is InterventionState.FAILED:
                 outcome = InterventionOutcome.FAILED
             elif intervention.state is InterventionState.SAFE_HALTED:

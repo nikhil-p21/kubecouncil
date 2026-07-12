@@ -13,7 +13,9 @@ from app.domain.incidents import (
     RecoveryAssessment,
     RecoveryEvidenceProvider,
     RecoveryObservation,
+    RestartDeploymentAction,
     RollbackDeploymentAction,
+    ScaleDeploymentAction,
     SyntheticProbe,
     SyntheticProbeObservation,
     SyntheticProbeRunner,
@@ -62,8 +64,8 @@ class DeterministicRecoveryVerifier:
                 "recovery verification requires a successful Intervention"
             )
         proposal = record.proposal
-        if proposal is None or not isinstance(proposal.action, RollbackDeploymentAction):
-            raise RecoveryVerificationError("rollback recovery requires its recorded proposal")
+        if proposal is None:
+            raise RecoveryVerificationError("recovery requires its recorded proposal")
         approval = next(
             (item for item in record.approvals if item.approval_id == intervention.approval_id),
             None,
@@ -106,10 +108,20 @@ class DeterministicRecoveryVerifier:
 
         deployment = observation.deployment
         metrics = observation.journey
+        action_converged = False
+        if isinstance(proposal.action, RollbackDeploymentAction):
+            action_converged = deployment.active_revision == proposal.action.revision
+        elif isinstance(proposal.action, ScaleDeploymentAction):
+            action_converged = (
+                deployment.active_revision == approval.workload_revision
+                and deployment.desired_replicas == proposal.action.replicas
+            )
+        elif isinstance(proposal.action, RestartDeploymentAction):
+            action_converged = deployment.active_revision > approval.workload_revision
         kubernetes_converged = (
             deployment.generation > approval.workload_generation
             and deployment.observed_generation == deployment.generation
-            and deployment.active_revision == proposal.action.revision
+            and action_converged
             and deployment.updated_replicas == deployment.desired_replicas
             and deployment.available_replicas == deployment.desired_replicas
             and deployment.unavailable_replicas == 0
