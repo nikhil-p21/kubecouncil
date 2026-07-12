@@ -241,6 +241,58 @@ describe("App", () => {
     expect(screenText()).toContain("Approved by responder@example.com");
   });
 
+  it("shows recovery convergence, traffic sufficiency, and stabilization progress", async () => {
+    const eventSources: MockEventSource[] = [];
+    vi.stubGlobal(
+      "EventSource",
+      class extends MockEventSource {
+        constructor(url: string) {
+          super(url);
+          eventSources.push(this);
+        }
+      },
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
+      const path = typeof input === "string" ? input : input.toString();
+      if (path === "/api/identity/me") {
+        return jsonResponse(responderIdentity());
+      }
+      if (path === "/api/incidents") {
+        return jsonResponse(monitoringIncidentRecord());
+      }
+      if (path === "/api/incidents/inc-123") {
+        return jsonResponse(recoveredIncidentRecord());
+      }
+      return jsonResponse([managedApplication()]);
+    });
+    renderApp();
+
+    await act(async () => {});
+    await act(async () => buttonByName("Open fake incident").click());
+
+    expect(screenText()).toContain("Recovery verification");
+    expect(screenText()).toContain("Awaiting evidence");
+    await act(async () => {
+      eventSources[0]?.emit({
+        event_id: "audit-recovery-2",
+        incident_id: "inc-123",
+        event_type: "recovery_stabilized",
+        occurred_at: "2026-07-11T00:06:00Z",
+        actor: "deterministic-recovery-verifier",
+        cursor: 2,
+      });
+    });
+
+    expect(screenText()).toContain("Lifecycle: Resolved");
+    expect(screenText()).toContain("Intervention: Succeeded");
+    expect(screenText()).toContain("Recovery verification");
+    expect(screenText()).toContain("2/2 stable windows");
+    expect(screenText()).toContain("Kubernetes converged · revision 7 · generation 10/10");
+    expect(screenText()).toContain("Replicas 2 updated, 2 available, 0 unavailable of 2 desired");
+    expect(screenText()).toContain("Workload symptoms cleared · OOM terminations 0 · restart delta 0");
+    expect(screenText()).toContain("Checkout · 120 requests · availability pass · latency pass");
+  });
+
   it("keeps Viewer identity read-only", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
       const path = typeof input === "string" ? input : input.toString();
@@ -517,6 +569,73 @@ function approvedIncidentRecord() {
         decided_at: "2026-07-11T00:03:00Z",
       },
     ],
+  };
+}
+
+function recoveredIncidentRecord() {
+  const record = approvedIncidentRecord();
+  const assessment = {
+    incident_id: "inc-123",
+    intervention_id: "intervention-1",
+    window_started_at: "2026-07-11T00:04:00Z",
+    window_ended_at: "2026-07-11T00:05:00Z",
+    observed_at: "2026-07-11T00:05:00Z",
+    generation: 10,
+    observed_generation: 10,
+    active_revision: 7,
+    desired_replicas: 2,
+    updated_replicas: 2,
+    available_replicas: 2,
+    unavailable_replicas: 0,
+    oom_terminations: 0,
+    restart_delta: 0,
+    kubernetes_converged: true,
+    symptoms_cleared: true,
+    journey_name: "checkout",
+    criteria_satisfied: true,
+    request_count: 120,
+    success_rate: 0.995,
+    p95_latency_ms: 800,
+    traffic_sufficient: true,
+    availability_satisfied: true,
+    latency_satisfied: true,
+    synthetic_probe_used: false,
+    synthetic_probe_successes: null,
+    sufficient_evidence: true,
+    stable_windows: 1,
+    required_stable_windows: 2,
+    explanation: "Recovery criteria are satisfied.",
+  };
+  return {
+    ...record,
+    incident: {
+      ...record.incident,
+      lifecycle: "resolved",
+      intervention_outcome: "succeeded",
+    },
+    recovery_assessments: [
+      assessment,
+      {
+        ...assessment,
+        window_started_at: "2026-07-11T00:05:00Z",
+        window_ended_at: "2026-07-11T00:06:00Z",
+        observed_at: "2026-07-11T00:06:00Z",
+        stable_windows: 2,
+      },
+    ],
+  };
+}
+
+function monitoringIncidentRecord() {
+  const record = approvedIncidentRecord();
+  return {
+    ...record,
+    incident: {
+      ...record.incident,
+      lifecycle: "monitoring",
+      intervention_outcome: "monitoring",
+    },
+    recovery_assessments: [],
   };
 }
 

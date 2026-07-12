@@ -1037,14 +1037,108 @@ class WorkloadLease(KubeCouncilModel):
         return self
 
 
+class DeploymentRecoveryObservation(KubeCouncilModel):
+    """Bounded Kubernetes and workload-symptom evidence for one recovery window."""
+
+    target: WorkloadReference
+    generation: int = Field(ge=1)
+    observed_generation: int = Field(ge=0)
+    active_revision: int = Field(ge=1)
+    desired_replicas: int = Field(ge=0)
+    updated_replicas: int = Field(ge=0)
+    available_replicas: int = Field(ge=0)
+    unavailable_replicas: int = Field(ge=0)
+    oom_terminations: int = Field(ge=0)
+    restart_delta: int = Field(ge=0)
+
+
+class CriticalJourneyObservation(KubeCouncilModel):
+    """Application metrics compared with both profile limits and a healthy baseline."""
+
+    journey_name: str = Field(min_length=1)
+    request_count: int = Field(ge=0)
+    success_rate: float | None = Field(default=None, ge=0, le=1)
+    p95_latency_ms: int | None = Field(default=None, gt=0)
+    healthy_baseline_success_rate: float = Field(ge=0, le=1)
+    healthy_baseline_p95_latency_ms: int = Field(gt=0)
+
+
+class RecoveryObservation(KubeCouncilModel):
+    deployment: DeploymentRecoveryObservation
+    journey: CriticalJourneyObservation
+
+
+class SyntheticProbeObservation(KubeCouncilModel):
+    probe_name: str = Field(min_length=1)
+    attempts: int = Field(ge=1)
+    successes: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def successes_do_not_exceed_attempts(self) -> "SyntheticProbeObservation":
+        if self.successes > self.attempts:
+            raise ValueError("synthetic probe successes cannot exceed attempts")
+        return self
+
+
 class RecoveryAssessment(KubeCouncilModel):
     incident_id: str = Field(min_length=1)
     intervention_id: str = Field(min_length=1)
+    window_started_at: datetime
+    window_ended_at: datetime
     observed_at: datetime
+    generation: int = Field(ge=1)
+    observed_generation: int = Field(ge=0)
+    active_revision: int = Field(ge=1)
+    desired_replicas: int = Field(ge=0)
+    updated_replicas: int = Field(ge=0)
+    available_replicas: int = Field(ge=0)
+    unavailable_replicas: int = Field(ge=0)
+    oom_terminations: int = Field(ge=0)
+    restart_delta: int = Field(ge=0)
+    kubernetes_converged: bool
+    symptoms_cleared: bool
+    journey_name: str = Field(min_length=1)
     criteria_satisfied: bool
     request_count: int = Field(ge=0)
+    success_rate: float | None = Field(default=None, ge=0, le=1)
+    p95_latency_ms: int | None = Field(default=None, gt=0)
+    traffic_sufficient: bool
+    availability_satisfied: bool
+    latency_satisfied: bool
+    synthetic_probe_used: bool
+    synthetic_probe_successes: int | None = Field(default=None, ge=0)
     sufficient_evidence: bool
+    stable_windows: int = Field(ge=0)
+    required_stable_windows: int = Field(ge=2)
     explanation: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def is_a_consistent_window_assessment(self) -> "RecoveryAssessment":
+        if self.window_ended_at <= self.window_started_at:
+            raise ValueError("recovery window end must follow its start")
+        if self.observed_at < self.window_ended_at:
+            raise ValueError("recovery assessment cannot precede its evidence window")
+        if not self.criteria_satisfied and self.stable_windows != 0:
+            raise ValueError("failed recovery criteria must reset stabilization progress")
+        if self.criteria_satisfied and self.stable_windows < 1:
+            raise ValueError("satisfied recovery criteria must advance stabilization")
+        if self.criteria_satisfied and not self.sufficient_evidence:
+            raise ValueError("recovery cannot pass with insufficient evidence")
+        if self.criteria_satisfied and not all(
+            (
+                self.kubernetes_converged,
+                self.symptoms_cleared,
+                self.traffic_sufficient,
+                self.availability_satisfied,
+                self.latency_satisfied,
+            )
+        ):
+            raise ValueError("recovery cannot pass with a failed deterministic check")
+        if self.synthetic_probe_used and self.synthetic_probe_successes is None:
+            raise ValueError("synthetic fallback must record its successful probe count")
+        if not self.synthetic_probe_used and self.synthetic_probe_successes is not None:
+            raise ValueError("probe results require synthetic fallback to be marked as used")
+        return self
 
 
 class AuditEvent(KubeCouncilModel):
@@ -1235,6 +1329,14 @@ class IncidentStore(Protocol):
         event: AuditEvent,
     ) -> InvestigationRecord: ...
 
+    def record_recovery_assessment(
+        self,
+        incident_id: str,
+        expected_version: int,
+        assessment: RecoveryAssessment,
+        event: AuditEvent,
+    ) -> InvestigationRecord: ...
+
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord: ...
 
     def timeline(self, incident_id: str, *, after: int = 0) -> tuple[AuditEvent, ...]: ...
@@ -1319,6 +1421,25 @@ class WorkloadLeaseStore(Protocol):
     def renew(self, lease: WorkloadLease, *, now: datetime) -> WorkloadLease: ...
 
     def release(self, lease: WorkloadLease) -> None: ...
+
+
+class RecoveryEvidenceProvider(Protocol):
+    """Reads only the bounded state needed for one deterministic recovery window."""
+
+    def observe(
+        self,
+        target: WorkloadReference,
+        journey: CriticalJourney,
+        *,
+        window_started_at: datetime,
+        window_ended_at: datetime,
+    ) -> RecoveryObservation: ...
+
+
+class SyntheticProbeRunner(Protocol):
+    """Runs the declared Critical Journey probe when application traffic is sparse."""
+
+    def run(self, probe: SyntheticProbe) -> SyntheticProbeObservation: ...
 
 
 class EvidenceRedactor(Protocol):

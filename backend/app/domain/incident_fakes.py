@@ -44,6 +44,7 @@ from app.domain.incidents import (
     PolicyStatus,
     ProfileValidationIssue,
     RawEvidenceObservation,
+    RecoveryAssessment,
     RecoveryCriteria,
     ReplicaBounds,
     RoleBindingEnrollmentState,
@@ -718,6 +719,118 @@ class InMemoryIncidentStore(IncidentStore):
                 update={
                     "incident": updated_incident,
                     "interventions": interventions,
+                    "audit_events": (
+                        *record.audit_events,
+                        event.model_copy(update={"cursor": next_cursor}),
+                    ),
+                }
+            )
+            return self._replace(InvestigationRecord.model_validate(updated.model_dump()))
+
+    def record_recovery_assessment(
+        self,
+        incident_id: str,
+        expected_version: int,
+        assessment: RecoveryAssessment,
+        event: AuditEvent,
+    ) -> InvestigationRecord:
+        """Append one recovery window and resolve only after verified stabilization."""
+
+        with self._lock:
+            record = self._required_record(incident_id)
+            if record.incident.version != expected_version:
+                raise ValueError("recovery verification context is stale")
+            if record.incident.lifecycle is not IncidentLifecycle.MONITORING:
+                raise ValueError("recovery verification requires a monitoring Incident")
+            if assessment.incident_id != incident_id or event.incident_id != incident_id:
+                raise ValueError("recovery assessment and audit event must belong to the Incident")
+            intervention = next(
+                (
+                    item
+                    for item in record.interventions
+                    if item.intervention_id == assessment.intervention_id
+                ),
+                None,
+            )
+            if intervention is None or intervention.state is not InterventionState.SUCCEEDED:
+                raise ValueError("recovery assessment requires a successful Intervention")
+            criteria = record.application_profile.recovery_criteria
+            if assessment.required_stable_windows != criteria.required_stable_windows:
+                raise ValueError("recovery assessment changed the required stabilization windows")
+            journey = next(
+                (
+                    item
+                    for item in record.application_profile.critical_journeys
+                    if item.name == criteria.critical_journey_name
+                ),
+                None,
+            )
+            if journey is None or assessment.journey_name != journey.name:
+                raise ValueError("recovery assessment changed the declared Critical Journey")
+            if assessment.traffic_sufficient != (
+                assessment.request_count >= journey.minimum_request_count
+            ):
+                raise ValueError("recovery traffic sufficiency is inconsistent")
+            if assessment.criteria_satisfied and not all(
+                (
+                    assessment.kubernetes_converged,
+                    assessment.symptoms_cleared,
+                    assessment.traffic_sufficient,
+                    assessment.availability_satisfied,
+                    assessment.latency_satisfied,
+                    assessment.sufficient_evidence,
+                )
+            ):
+                raise ValueError("recovery criteria contain a failed deterministic check")
+            expected_duration = timedelta(seconds=criteria.stabilization_window_seconds)
+            if assessment.window_ended_at - assessment.window_started_at != expected_duration:
+                raise ValueError("recovery assessment used the wrong stabilization window")
+            previous = tuple(
+                item
+                for item in record.recovery_assessments
+                if item.intervention_id == intervention.intervention_id
+            )
+            if previous and assessment.window_started_at < previous[-1].window_ended_at:
+                raise ValueError("recovery assessment windows cannot overlap")
+            expected_stable_windows = 0
+            if assessment.criteria_satisfied:
+                expected_stable_windows = 1
+                if (
+                    previous
+                    and previous[-1].criteria_satisfied
+                    and previous[-1].window_ended_at == assessment.window_started_at
+                ):
+                    expected_stable_windows = previous[-1].stable_windows + 1
+            if assessment.stable_windows != expected_stable_windows:
+                raise ValueError("recovery assessment stabilization progress is invalid")
+            stabilized = assessment.stable_windows >= criteria.required_stable_windows
+            expected_event_type = (
+                "recovery_stabilized" if stabilized else "recovery_window_satisfied"
+            )
+            if not assessment.criteria_satisfied:
+                expected_event_type = "recovery_window_failed"
+            if event.event_type != expected_event_type:
+                raise ValueError("recovery audit event does not match the assessment")
+            if any(item.event_id == event.event_id for item in record.audit_events):
+                raise ValueError("audit event already exists and is append-only")
+            next_cursor = record.audit_events[-1].cursor + 1 if record.audit_events else 1
+            updated_incident = record.incident
+            if stabilized:
+                updated_incident = transition_incident(
+                    record.incident,
+                    lifecycle=IncidentLifecycle.RESOLVED,
+                    intervention_outcome=InterventionOutcome.SUCCEEDED,
+                )
+            updated_incident = updated_incident.model_copy(
+                update={"version": record.incident.version + 1}
+            )
+            updated = record.model_copy(
+                update={
+                    "incident": updated_incident,
+                    "recovery_assessments": (
+                        *record.recovery_assessments,
+                        assessment,
+                    ),
                     "audit_events": (
                         *record.audit_events,
                         event.model_copy(update={"cursor": next_cursor}),

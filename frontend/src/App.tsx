@@ -133,8 +133,40 @@ type IncidentRecord = {
     decision: "approved" | "rejected";
     decided_at: string;
   }>;
+  recovery_assessments: Array<{
+    intervention_id: string;
+    window_started_at: string;
+    window_ended_at: string;
+    observed_at: string;
+    generation: number;
+    observed_generation: number;
+    active_revision: number;
+    desired_replicas: number;
+    updated_replicas: number;
+    available_replicas: number;
+    unavailable_replicas: number;
+    oom_terminations: number;
+    restart_delta: number;
+    kubernetes_converged: boolean;
+    symptoms_cleared: boolean;
+    journey_name: string;
+    criteria_satisfied: boolean;
+    request_count: number;
+    success_rate: number | null;
+    p95_latency_ms: number | null;
+    traffic_sufficient: boolean;
+    availability_satisfied: boolean;
+    latency_satisfied: boolean;
+    synthetic_probe_used: boolean;
+    synthetic_probe_successes: number | null;
+    sufficient_evidence: boolean;
+    stable_windows: number;
+    required_stable_windows: number;
+    explanation: string;
+  }>;
   audit_events: Array<{
     event_id: string;
+    incident_id: string;
     event_type: string;
     occurred_at: string;
     actor: string;
@@ -247,6 +279,11 @@ export function App() {
         }
         return { ...current, audit_events: [...current.audit_events, event] };
       });
+      if (event.event_type.startsWith("recovery_")) {
+        void requestJson<IncidentRecord>(`/api/incidents/${event.incident_id}`)
+          .then((updated) => setRecord(updated))
+          .catch((error: unknown) => console.error("Recovery state refresh failed", error));
+      }
     };
     source.addEventListener("timeline", receiveTimelineEvent as EventListener);
     return () => source.close();
@@ -625,6 +662,10 @@ function IncidentDetail({
         )}
       </article>
 
+      {record.recovery_assessments.length || incident.lifecycle === "monitoring" || incident.lifecycle === "resolved" ? (
+        <RecoveryDetail record={record} />
+      ) : null}
+
       {incident.investigation_outcome !== "not_started" ? (
         <CouncilDetail
           approvalReview={approvalReview}
@@ -635,6 +676,52 @@ function IncidentDetail({
         />
       ) : null}
     </section>
+  );
+}
+
+function RecoveryDetail({ record }: { record: IncidentRecord }) {
+  const latest = record.recovery_assessments.at(-1);
+  return (
+    <article className="incident-card recovery-detail">
+      <div className="timeline-heading">
+        <h2>Recovery verification</h2>
+        <span>{latest ? `${latest.stable_windows}/${latest.required_stable_windows} stable windows` : "Awaiting evidence"}</span>
+      </div>
+      <p>
+        Mutation success remains in monitoring until Kubernetes, workload symptoms, and the Critical Journey stay healthy for the full Stabilization Window.
+      </p>
+      {record.recovery_assessments.length ? (
+        <ol className="plain-list recovery-windows">
+          {record.recovery_assessments.map((assessment) => (
+            <li key={`${assessment.intervention_id}-${assessment.window_ended_at}`}>
+              <strong>
+                Window {assessment.stable_windows}/{assessment.required_stable_windows} · {assessment.criteria_satisfied ? "criteria satisfied" : "stabilization reset"}
+              </strong>
+              <span>
+                Kubernetes {assessment.kubernetes_converged ? "converged" : "not converged"} · revision {assessment.active_revision} · generation {assessment.observed_generation}/{assessment.generation}
+              </span>
+              <span>
+                Replicas {assessment.updated_replicas} updated, {assessment.available_replicas} available, {assessment.unavailable_replicas} unavailable of {assessment.desired_replicas} desired
+              </span>
+              <span>
+                Workload symptoms {assessment.symptoms_cleared ? "cleared" : "still present"} · OOM terminations {assessment.oom_terminations} · restart delta {assessment.restart_delta}
+              </span>
+              <span>
+                {titleCase(assessment.journey_name)} · {assessment.request_count} requests · availability {assessment.availability_satisfied ? "pass" : "insufficient"} · latency {assessment.latency_satisfied ? "pass" : "insufficient"}
+              </span>
+              {assessment.synthetic_probe_used ? (
+                <span>Synthetic availability fallback · {assessment.synthetic_probe_successes} successful probes · latency remains insufficient</span>
+              ) : null}
+              <small>
+                {new Date(assessment.window_started_at).toLocaleString()} — {new Date(assessment.window_ended_at).toLocaleString()} · {assessment.explanation}
+              </small>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="evidence-window">No completed recovery window has been recorded.</p>
+      )}
+    </article>
   );
 }
 

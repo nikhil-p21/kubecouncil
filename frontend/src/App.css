@@ -581,6 +581,37 @@ h2 {
   color: #8b4214;
 }
 
+.recovery-detail {
+  grid-column: span 12;
+}
+
+.recovery-detail > p {
+  color: #52666c;
+  line-height: 1.55;
+}
+
+.recovery-windows {
+  display: grid;
+  gap: 12px;
+}
+
+.recovery-windows li {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #c9ded2;
+  border-radius: 8px;
+  padding: 14px;
+  background: #f7fcf8;
+}
+
+.recovery-windows span {
+  color: #455960;
+}
+
+.recovery-windows small {
+  color: #64777c;
+}
+
 @media (max-width: 760px) {
   .incident-shell {
     width: min(100% - 24px, 1120px);

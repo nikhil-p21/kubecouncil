@@ -21,6 +21,7 @@ from app.domain.incidents import (
     InvestigationRecord,
     ModelInvocation,
     PolicyDecision,
+    RecoveryAssessment,
     SpecialistFinding,
 )
 
@@ -273,6 +274,23 @@ class FirestoreIncidentStore:
         return self._mutate(
             incident_id,
             lambda store: store.update_intervention(incident_id, intervention, event),
+        )
+
+    def record_recovery_assessment(
+        self,
+        incident_id: str,
+        expected_version: int,
+        assessment: RecoveryAssessment,
+        event: AuditEvent,
+    ) -> InvestigationRecord:
+        return self._mutate(
+            incident_id,
+            lambda store: store.record_recovery_assessment(
+                incident_id,
+                expected_version,
+                assessment,
+                event,
+            ),
         )
 
     def append_audit_event(self, incident_id: str, event: AuditEvent) -> InvestigationRecord:

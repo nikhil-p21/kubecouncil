@@ -89,6 +89,7 @@ def get_incident_store(request: Request) -> IncidentStore:
             "complete_investigation",
             "record_policy_decision",
             "record_approval_decision",
+            "record_recovery_assessment",
             "append_evidence_retrieval_failure",
             "append_audit_event",
             "timeline",
