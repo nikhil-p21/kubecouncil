@@ -66,6 +66,23 @@ def test_iap_identity_verifies_assertion_and_maps_explicit_responder() -> None:
     ]
 
 
+def test_iap_identity_maps_wildcard_responder() -> None:
+    verifier = RecordingTokenVerifier()
+    provider = IAPIdentityProvider(
+        audience="/projects/123/global/backendServices/456",
+        responder_principals=frozenset({"*"}),
+        token_verifier=verifier,
+    )
+
+    identity = provider.authenticate("signed-assertion")
+
+    assert identity == OperatorIdentity(
+        principal="responder@example.com",
+        subject="accounts.google.com:1234",
+        role=OperatorRole.RESPONDER,
+    )
+
+
 def test_iap_identity_rejects_invalid_issuer_and_local_identity_is_development_only() -> None:
     provider = IAPIdentityProvider(
         audience="iap-audience",

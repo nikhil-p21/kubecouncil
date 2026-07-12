@@ -18,7 +18,7 @@ data:
   KUBECOUNCIL_VERTEX_MODEL: gemini-3.5-flash
   GOOGLE_CLOUD_LOCATION: asia-northeast1
   KUBECOUNCIL_IAP_AUDIENCE: /projects/1019610377153/global/backendServices/7577140543105202250
-  KUBECOUNCIL_RESPONDER_PRINCIPALS: nikhil.p6257@gmail.com
+  KUBECOUNCIL_RESPONDER_PRINCIPALS: "*"
   KUBECOUNCIL_ADMISSION_POLICY_BINDING: kubecouncil-executor-boundary
   KUBECOUNCIL_PREFLIGHT_IDENTITY: system:serviceaccount:kubecouncil-system:policy-preflight
 ---

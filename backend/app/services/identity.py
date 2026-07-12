@@ -84,7 +84,7 @@ class IAPIdentityProvider(IdentityProvider):
         principal = _normalize_principal(email)
         role = (
             OperatorRole.RESPONDER
-            if principal in self._responders
+            if ("*" in self._responders or principal in self._responders)
             else OperatorRole.VIEWER
         )
         return OperatorIdentity(principal=principal, subject=subject, role=role)
