@@ -1,0 +1,38 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubecouncil-enrollment-read
+  labels: {app.kubernetes.io/part-of: kubecouncil}
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    resourceNames: [online-boutique]
+    verbs: [get]
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [validatingadmissionpolicybindings]
+    resourceNames: [kubecouncil-executor-boundary]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubecouncil-investigator-enrollment-read
+  labels: {app.kubernetes.io/part-of: kubecouncil}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubecouncil-enrollment-read
+subjects:
+  - {kind: ServiceAccount, name: investigator, namespace: kubecouncil-system}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubecouncil-executor-enrollment-read
+  labels: {app.kubernetes.io/part-of: kubecouncil}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubecouncil-enrollment-read
+subjects:
+  - {kind: ServiceAccount, name: executor, namespace: kubecouncil-system}

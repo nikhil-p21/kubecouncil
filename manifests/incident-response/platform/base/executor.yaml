@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: executor
+  namespace: kubecouncil-system
+  labels:
+    app.kubernetes.io/name: executor
+    app.kubernetes.io/part-of: kubecouncil
+    app.kubernetes.io/component: executor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: executor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: executor
+        app.kubernetes.io/part-of: kubecouncil
+        app.kubernetes.io/component: executor
+    spec:
+      serviceAccountName: executor
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: executor
+          image: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil/kubecouncil-executor@sha256:fb629f122639ff9b3147ff2c64164f4cf4ddd6e29ef0df7660a3a92c6c8b3aee
+          imagePullPolicy: IfNotPresent
+          command: [python, -m, app.executor]
+          envFrom:
+            - configMapRef: {name: kubecouncil-executor-runtime}
+          env:
+            - {name: KUBECOUNCIL_RUNTIME_MODE, value: deployed}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true

@@ -1,4 +1,4 @@
-"""Minimal fake-backed incident API used by the first incident-response slice."""
+"""Incident commands and replay APIs backed by the selected explicit runtime profile."""
 
 import asyncio
 import json
@@ -31,6 +31,7 @@ from app.domain.incidents import (
     transition_incident,
 )
 from app.domain.models import KubeCouncilModel
+from app.runtime.readiness import ReadinessRegistry
 from app.services.alerts import AlertNormalizer, AlertNotification
 from app.services.approval import ApprovalError, ApprovalService
 from app.services.council import BoundedIncidentCouncil, CouncilError
@@ -159,6 +160,23 @@ def get_approval_service(request: Request) -> ApprovalService:
     return cast(ApprovalService, service)
 
 
+def require_intervention_readiness(request: Request) -> None:
+    if getattr(request.app.state, "runtime_mode", "test") != "deployed":
+        return
+    registry = getattr(request.app.state, "readiness", None)
+    if not isinstance(registry, ReadinessRegistry) or not registry.approval_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "intervention_not_ready",
+                "message": (
+                    "Approval is disabled until identity, evidence, Council, persistence, "
+                    "and every intervention enforcement layer are ready"
+                ),
+            },
+        )
+
+
 @router.post("", response_model=InvestigationRecord, status_code=status.HTTP_201_CREATED)
 def open_incident(
     request: OpenIncidentRequest,
@@ -284,6 +302,7 @@ async def investigate_incident(
 @router.get("/{incident_id}/approval-review", response_model=ApprovalReview)
 def review_proposal(
     incident_id: str,
+    _: Annotated[None, Depends(require_intervention_readiness)],
     identity: Annotated[OperatorIdentity, Depends(require_responder)],
     store: Annotated[IncidentStore, Depends(get_incident_store)],
     service: Annotated[ApprovalService, Depends(get_approval_service)],
@@ -302,6 +321,7 @@ def review_proposal(
 def decide_proposal(
     incident_id: str,
     request: DecideProposalRequest,
+    _: Annotated[None, Depends(require_intervention_readiness)],
     identity: Annotated[OperatorIdentity, Depends(require_responder)],
     store: Annotated[IncidentStore, Depends(get_incident_store)],
     service: Annotated[ApprovalService, Depends(get_approval_service)],

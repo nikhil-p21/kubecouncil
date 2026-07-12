@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: policy-preflight
+  namespace: kubecouncil-system
+  labels:
+    app.kubernetes.io/part-of: kubecouncil
+    app.kubernetes.io/component: policy-preflight
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubecouncil-policy-preflight-impersonation
+  labels: {app.kubernetes.io/part-of: kubecouncil}
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    resourceNames: [policy-preflight]
+    verbs: [impersonate]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubecouncil-investigator-policy-preflight
+  labels: {app.kubernetes.io/part-of: kubecouncil}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubecouncil-policy-preflight-impersonation
+subjects:
+  - {kind: ServiceAccount, name: investigator, namespace: kubecouncil-system}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubecouncil-policy-preflight
+  namespace: online-boutique
+  labels: {app.kubernetes.io/part-of: kubecouncil}
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames:
+      - frontend
+      - checkoutservice
+      - cartservice
+      - recommendationservice
+      - productcatalogservice
+      - currencyservice
+      - shippingservice
+      - paymentservice
+      - emailservice
+      - adservice
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubecouncil-policy-preflight
+  namespace: online-boutique
+  labels: {app.kubernetes.io/part-of: kubecouncil}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubecouncil-policy-preflight
+subjects:
+  - {kind: ServiceAccount, name: policy-preflight, namespace: kubecouncil-system}

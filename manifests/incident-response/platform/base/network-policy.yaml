@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: executor-no-ingress
+  namespace: kubecouncil-system
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: executor}
+  policyTypes: [Ingress]
+  ingress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: investigator-api-ingress
+  namespace: kubecouncil-system
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: investigator}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - {protocol: TCP, port: 8000}

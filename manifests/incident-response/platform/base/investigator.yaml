@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: investigator
+  namespace: kubecouncil-system
+  labels:
+    app.kubernetes.io/name: investigator
+    app.kubernetes.io/part-of: kubecouncil
+    app.kubernetes.io/component: investigator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: investigator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: investigator
+        app.kubernetes.io/part-of: kubecouncil
+        app.kubernetes.io/component: investigator
+      annotations:
+        kubecouncil.io/runtime-revision: kc25-4
+    spec:
+      serviceAccountName: investigator
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: api
+          image: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil/kubecouncil-backend@sha256:0967ab7a661052a5c421599050efdb54fbc354def940ac30f46218f45a3189bc
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8000}
+          envFrom:
+            - configMapRef: {name: kubecouncil-runtime}
+          env:
+            - {name: KUBECOUNCIL_RUNTIME_MODE, value: deployed}
+            - {name: GOOGLE_GENAI_USE_VERTEXAI, value: "true"}
+            - {name: KUBECOUNCIL_APPLICATION_PROFILE_PATH, value: /etc/kubecouncil/profile.yaml}
+          volumeMounts:
+            - {name: application-profile, mountPath: /etc/kubecouncil, readOnly: true}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: {path: /ready, port: http}
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+      volumes:
+        - name: application-profile
+          configMap:
+            name: kubecouncil-application-profile
+            items:
+              - {key: profile.yaml, path: profile.yaml}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: investigator
+  namespace: kubecouncil-system
+  annotations:
+    cloud.google.com/backend-config: '{"default":"investigator-iap"}'
+    cloud.google.com/neg: '{"ingress":true}'
+spec:
+  selector: {app.kubernetes.io/name: investigator}
+  ports:
+    - {name: http, port: 8000, targetPort: http}
+---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: investigator-iap
+  namespace: kubecouncil-system
+spec:
+  timeoutSec: 120
+  iap:
+    enabled: true
+    oauthclientCredentials:
+      secretName: kubecouncil-iap-oauth
+  healthCheck:
+    type: HTTP
+    requestPath: /health
+    port: 8000

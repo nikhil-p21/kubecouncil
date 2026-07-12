@@ -1,0 +1,8 @@
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: kubecouncil-iap-certificate
+  namespace: kubecouncil-system
+spec:
+  domains:
+    - 34-49-191-209.sslip.io

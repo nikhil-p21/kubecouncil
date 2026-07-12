@@ -21,3 +21,15 @@ Validate against the selected cluster without persisting changes:
 ```bash
 kubectl apply -k manifests/incident-response/bootstrap --server-side --dry-run=server
 ```
+
+## KC-25 platform layers
+
+`platform/overlays/findydevops-dev` composes the bootstrap identities, Online Boutique demo,
+Investigator/API, no-ADK Executor, non-root UI, custom-OAuth IAP BackendConfigs, least-privilege
+Enrollment reads, an environment-specific Google-managed TLS certificate, and the Executor
+admission boundary. The operator must provision `kubecouncil-iap-oauth` with `client_id` and
+`client_secret` keys because external Google accounts cannot use the organization-restricted
+Google-managed OAuth client. The public demo hostname is scoped to this overlay; no TLS key, OAuth
+client secret, or Kubernetes Secret is stored in the repository. See
+`docs/runbooks/layered-gke-deployment.md` for apply, readiness, IAP, negative enforcement, and live
+Council verification.

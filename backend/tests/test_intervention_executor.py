@@ -10,7 +10,14 @@ from app.domain.incident_fakes import (
     InMemoryIncidentStore,
     fake_application_profile,
 )
-from app.domain.incidents import AlertSignal, ApprovalDecision, IncidentStore
+from app.domain.incidents import (
+    AlertSignal,
+    ApprovalDecision,
+    AuditEvent,
+    IncidentStore,
+    Intervention,
+    InterventionState,
+)
 from app.services.approval import ApprovalService
 from app.services.council import BoundedIncidentCouncil, FakeIncidentCouncilModel
 from app.services.evidence import DeterministicEvidenceRedactor, InitialEvidenceWindowCollector
@@ -121,6 +128,38 @@ def test_executor_rejects_workload_state_that_changed_after_approval() -> None:
     assert rejected is not None
     assert rejected.interventions[0].state.value == "safe_halted"
     assert rejected.incident.intervention_outcome.value == "safe_halted"
+
+
+def test_unexpected_provider_failure_after_claim_enters_safe_halt() -> None:
+    store, kubernetes, _, _ = _awaiting_approval()
+    queue = InMemoryInterventionQueue()
+    approval = ApprovalService(kubernetes, publisher=queue)
+    record = store.list()[0]
+    review = approval.review(store, record.incident.incident_id, _responder())
+    approval.decide(
+        store,
+        incident_id=record.incident.incident_id,
+        identity=_responder(),
+        decision=ApprovalDecision.APPROVED,
+        reviewed_binding=review.binding,
+    )
+    request = queue.pending()[0]
+    executor_kubernetes = FakeExecutorKubernetesProvider.from_policy_provider(kubernetes)
+    executor = DeterministicInterventionExecutor(
+        kubernetes=executor_kubernetes,
+        enrollment=ExplodingEnrollmentProvider(),
+        leases=FirestoreWorkloadLeaseStore(InMemoryLeaseDatabase()),
+        owner="executor-test-1",
+    )
+
+    with pytest.raises(InterventionExecutionError, match="unexpected Executor failure"):
+        executor.consume(store, request)
+
+    failed = store.get(request.incident_id)
+    assert failed is not None
+    assert failed.interventions[0].state.value == "safe_halted"
+    assert failed.incident.intervention_outcome.value == "safe_halted"
+    assert failed.audit_events[-1].event_type == "intervention_safe_halted"
 
 
 def test_rejected_human_decision_never_publishes_an_intervention() -> None:
@@ -236,6 +275,68 @@ def test_duplicate_delivery_returns_completed_intervention_without_a_second_writ
     completed = store.get(request.incident_id)
     assert completed is not None
     assert completed.audit_events[-1].event_type == "intervention_duplicate_rejected"
+
+
+def test_redelivery_resumes_running_intervention_before_any_mutation() -> None:
+    store, kubernetes, enrollment, _ = _awaiting_approval()
+    queue = InMemoryInterventionQueue()
+    approval = ApprovalService(kubernetes, publisher=queue)
+    record = store.list()[0]
+    review = approval.review(store, record.incident.incident_id, _responder())
+    approval.decide(
+        store,
+        incident_id=record.incident.incident_id,
+        identity=_responder(),
+        decision=ApprovalDecision.APPROVED,
+        reviewed_binding=review.binding,
+    )
+    request = queue.pending()[0]
+    approved = store.get(request.incident_id)
+    assert approved is not None
+    running = Intervention(
+        intervention_id=f"intervention-{request.idempotency_key[:24]}",
+        incident_id=request.incident_id,
+        proposal_id=request.proposal_id,
+        approval_id=request.approval_id,
+        target=request.target,
+        state=InterventionState.RUNNING,
+        requested_at=request.requested_at,
+        idempotency_key=request.idempotency_key,
+    )
+    store.record_intervention(
+        request.incident_id,
+        approved.incident.version,
+        running,
+        AuditEvent(
+            event_id="audit-interrupted-claim",
+            incident_id=request.incident_id,
+            event_type="intervention_claimed",
+            occurred_at=datetime.now(UTC),
+            actor="deterministic-executor",
+        ),
+    )
+    executor_kubernetes = FakeExecutorKubernetesProvider.from_policy_provider(kubernetes)
+    executor = DeterministicInterventionExecutor(
+        kubernetes=executor_kubernetes,
+        enrollment=enrollment,
+        leases=FirestoreWorkloadLeaseStore(InMemoryLeaseDatabase()),
+        owner="executor-test-1",
+    )
+
+    resumed = executor.consume(store, request)
+
+    assert resumed.state is InterventionState.SUCCEEDED
+    assert len(executor_kubernetes.applied_patches) == 1
+    completed = store.get(request.incident_id)
+    assert completed is not None
+    assert any(
+        event.event_type == "intervention_resumed" for event in completed.audit_events
+    )
+
+
+class ExplodingEnrollmentProvider:
+    def inspect(self, profile: object) -> object:
+        raise RuntimeError("protected dependency read was forbidden")
 
 
 def test_firestore_shaped_lease_serializes_and_renews_workload_ownership() -> None:

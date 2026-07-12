@@ -79,7 +79,8 @@ class DeterministicInterventionExecutor:
             ),
             None,
         )
-        if duplicate is not None:
+        resuming = duplicate is not None and duplicate.state is InterventionState.RUNNING
+        if duplicate is not None and not resuming:
             store.append_audit_event(
                 request.incident_id,
                 self._event(request, "intervention_duplicate_rejected", now),
@@ -95,7 +96,7 @@ class DeterministicInterventionExecutor:
             ),
         )
 
-        intervention = Intervention(
+        intervention = duplicate or Intervention(
             intervention_id=f"intervention-{request.idempotency_key[:24]}",
             incident_id=request.incident_id,
             proposal_id=request.proposal_id,
@@ -123,7 +124,7 @@ class DeterministicInterventionExecutor:
             )
             raise InterventionExecutionError("another Intervention holds the Managed Workload")
 
-        claimed = False
+        claimed = resuming
         try:
             record = store.get(request.incident_id)
             if record is None:
@@ -151,18 +152,29 @@ class DeterministicInterventionExecutor:
                     "Intervention request differs from reviewed policy"
                 )
 
-            store.record_intervention(
-                request.incident_id,
-                record.incident.version,
-                intervention,
-                self._event(
-                    request,
-                    "intervention_claimed",
-                    now,
-                    action_type=proposal.action.action_type,
-                ),
-            )
-            claimed = True
+            if claimed:
+                store.append_audit_event(
+                    request.incident_id,
+                    self._event(
+                        request,
+                        "intervention_resumed",
+                        now,
+                        action_type=proposal.action.action_type,
+                    ),
+                )
+            else:
+                store.record_intervention(
+                    request.incident_id,
+                    record.incident.version,
+                    intervention,
+                    self._event(
+                        request,
+                        "intervention_claimed",
+                        now,
+                        action_type=proposal.action.action_type,
+                    ),
+                )
+                claimed = True
 
             state = self._kubernetes.inspect_deployment(request.target)
             if state is None:
@@ -275,6 +287,15 @@ class DeterministicInterventionExecutor:
             else:
                 self._record_refusal(store, request, str(error))
             raise
+        except Exception as error:
+            reason = f"{type(error).__name__}: {error}"
+            if claimed:
+                self._record_safe_halt(store, intervention, request, reason)
+            else:
+                self._record_refusal(store, request, reason)
+            raise InterventionExecutionError(
+                f"unexpected Executor failure: {reason}"
+            ) from error
         finally:
             try:
                 self._leases.release(lease)

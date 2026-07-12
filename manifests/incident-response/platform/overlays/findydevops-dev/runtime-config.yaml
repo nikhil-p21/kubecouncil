@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubecouncil-runtime
+  namespace: kubecouncil-system
+  labels:
+    app.kubernetes.io/part-of: kubecouncil
+    kubecouncil.io/environment: findydevops-dev
+data:
+  KUBECOUNCIL_PROJECT_ID: findydevops
+  GOOGLE_CLOUD_PROJECT: findydevops
+  KUBECOUNCIL_FIRESTORE_DATABASE: (default)
+  KUBECOUNCIL_INCIDENT_COLLECTION: kubecouncil-incidents
+  KUBECOUNCIL_LEASE_COLLECTION: kubecouncil-workload-leases
+  KUBECOUNCIL_ALERT_SUBSCRIPTION: kc-investigator-alerts
+  KUBECOUNCIL_INTERVENTION_TOPIC: kc-interventions
+  KUBECOUNCIL_INTERVENTION_SUBSCRIPTION: kc-executor-interventions
+  KUBECOUNCIL_VERTEX_MODEL: gemini-3.5-flash
+  GOOGLE_CLOUD_LOCATION: asia-northeast1
+  KUBECOUNCIL_IAP_AUDIENCE: /projects/1019610377153/global/backendServices/7577140543105202250
+  KUBECOUNCIL_RESPONDER_PRINCIPALS: nikhil.p6257@gmail.com
+  KUBECOUNCIL_ADMISSION_POLICY_BINDING: kubecouncil-executor-boundary
+  KUBECOUNCIL_PREFLIGHT_IDENTITY: system:serviceaccount:kubecouncil-system:policy-preflight
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubecouncil-executor-runtime
+  namespace: kubecouncil-system
+  labels:
+    app.kubernetes.io/part-of: kubecouncil
+    app.kubernetes.io/component: executor
+data:
+  KUBECOUNCIL_PROJECT_ID: findydevops
+  KUBECOUNCIL_FIRESTORE_DATABASE: (default)
+  KUBECOUNCIL_INCIDENT_COLLECTION: kubecouncil-incidents
+  KUBECOUNCIL_LEASE_COLLECTION: kubecouncil-workload-leases
+  KUBECOUNCIL_INTERVENTION_SUBSCRIPTION: kc-executor-interventions
+  KUBECOUNCIL_ADMISSION_POLICY_BINDING: kubecouncil-executor-boundary

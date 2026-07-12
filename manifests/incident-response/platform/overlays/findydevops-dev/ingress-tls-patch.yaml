@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kubecouncil
+  namespace: kubecouncil-system
+  annotations:
+    networking.gke.io/managed-certificates: kubecouncil-iap-certificate
+spec:
+  rules:
+    - host: 34-49-191-209.sslip.io
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: investigator
+                port:
+                  number: 8000

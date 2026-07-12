@@ -105,13 +105,18 @@ class GooglePubSubSubscription:
         self._timeout_seconds = timeout_seconds
 
     def pull(self, *, maximum_messages: int) -> tuple[PubSubDelivery, ...]:
-        response = self._client.pull(
-            request={
-                "subscription": self._subscription_path,
-                "max_messages": maximum_messages,
-            },
-            timeout=self._timeout_seconds,
-        )
+        try:
+            response = self._client.pull(
+                request={
+                    "subscription": self._subscription_path,
+                    "max_messages": maximum_messages,
+                },
+                timeout=self._timeout_seconds,
+            )
+        except Exception as error:
+            if type(error).__name__ == "DeadlineExceeded":
+                return ()
+            raise
         return tuple(
             PubSubDelivery(ack_id=item.ack_id, data=item.message.data)
             for item in response.received_messages

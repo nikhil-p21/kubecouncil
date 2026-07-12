@@ -1,0 +1,40 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubecouncil-executor-boundary
+  labels: {app.kubernetes.io/part-of: kubecouncil}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [UPDATE]
+        resources: [deployments]
+  validations:
+    - expression: >-
+        request.userInfo.username != 'system:serviceaccount:kubecouncil-system:executor' ||
+        (request.namespace == 'online-boutique' &&
+        'kubecouncil.io/managed' in oldObject.metadata.labels &&
+        'kubecouncil.io/managed' in object.metadata.labels &&
+        oldObject.metadata.labels['kubecouncil.io/managed'] == 'true' &&
+        object.metadata.labels['kubecouncil.io/managed'] == 'true')
+      message: Executor writes require the enrolled namespace and an unchanged managed workload label.
+    - expression: >-
+        request.userInfo.username != 'system:serviceaccount:kubecouncil-system:policy-preflight' ||
+        (request.dryRun == true &&
+        request.namespace == 'online-boutique' &&
+        'kubecouncil.io/managed' in oldObject.metadata.labels &&
+        'kubecouncil.io/managed' in object.metadata.labels &&
+        oldObject.metadata.labels['kubecouncil.io/managed'] == 'true' &&
+        object.metadata.labels['kubecouncil.io/managed'] == 'true')
+      message: Policy preflight authority is valid only for dry-run updates to enrolled managed workloads.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubecouncil-executor-boundary
+  labels: {app.kubernetes.io/part-of: kubecouncil}
+spec:
+  policyName: kubecouncil-executor-boundary
+  validationActions: [Deny]

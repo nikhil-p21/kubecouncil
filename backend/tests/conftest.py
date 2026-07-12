@@ -1,8 +1,11 @@
 """Explicit test identity; deployed application defaults remain fail-closed."""
 
+import os
 from collections.abc import Iterator
 
 import pytest
+
+os.environ.setdefault("KUBECOUNCIL_RUNTIME_MODE", "test")
 
 from app.domain.identity import OperatorIdentity, OperatorRole
 from app.main import app
