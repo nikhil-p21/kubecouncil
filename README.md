@@ -29,7 +29,7 @@ flowchart TD
     CM["Cloud Monitoring Alert Signals"] -->|Pub/Sub| API["Investigator / API"]
     UI["IAP-protected React Dashboard"] -->|REST / SSE| API
     
-    subgraph Investigator Boundary (Read-Only)
+    subgraph investigator_boundary["Investigator Boundary (Read-Only)"]
         API -->|Scoped Queries| EG["Evidence Query Gateway"]
         EG -->|MCP| CL["Cloud Logging"]
         EG -->|MCP| CM_Metrics["Cloud Monitoring Metrics"]
@@ -40,14 +40,14 @@ flowchart TD
 
     API -->|Approved Interventions| PubSub_Intervention["Pub/Sub Topic"]
     
-    subgraph Executor Boundary (Write-Only)
+    subgraph executor_boundary["Executor Boundary (Write-Only)"]
         PubSub_Intervention --> EX["Deterministic Executor (No LLM)"]
         EX -->|Apply Patches| GKE["GKE / Kubernetes API"]
         EX -->|Verify Journeys| Probe["Critical Journey Probe"]
         EX -->|Lease Locking| FS
     end
     
-    subgraph Demo Boundary
+    subgraph demo_boundary["Demo Boundary"]
         SC["Scenario Controller"] -->|Failure Injection| GKE
     end
 ```
