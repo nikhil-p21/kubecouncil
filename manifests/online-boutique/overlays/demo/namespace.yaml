@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: online-boutique
+  labels:
+    app.kubernetes.io/name: online-boutique
+    app.kubernetes.io/part-of: kubecouncil-demo
+    kubecouncil.io/enrolled: "true"
+    kubecouncil.io/demo-only: "true"

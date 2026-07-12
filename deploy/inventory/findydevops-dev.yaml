@@ -1,5 +1,5 @@
 profile_id: findydevops-dev
-generated_at: "2026-07-12T05:51:04Z"
+generated_at: "2026-07-12T07:12:23Z"
 project_id: findydevops
 region: asia-northeast1
 zone: asia-northeast1-a
@@ -34,6 +34,7 @@ pubsub_subscriptions:
 image_references:
   backend: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil/kubecouncil-backend@sha256:2cde6d17600de23b44c399eee48da82d8a299fa515bd8ed9453351451d45b331
   frontend: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil/kubecouncil-frontend@sha256:bae6d6fa1f209d00f68e333675fe6c1b19a1ba359d5d2145ddce02620b386fb3
+  scenario_controller: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil/kubecouncil-scenario-controller@sha256:31ca22bb21aa818f29330d4a0e8c42a61082a50f3bd9ac77d32ad6d19e78d5de
 readiness:
   operator_setup_verified: true
   cluster_running: true
@@ -48,6 +49,9 @@ readiness:
   iap_principal_lists_validated: true
   current_source_images_published: true
   workload_identity_smoke_passed: true
+  online_boutique_deployed: true
+  scenario_controller_deployed: true
+  scenarios_live_validated: true
 required_manual_inputs: []
 commands:
   - PYTHONPATH=backend .venv/bin/python -m app.bootstrap --profile deploy/profiles/findydevops-dev.yaml preflight

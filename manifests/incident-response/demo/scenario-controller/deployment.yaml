@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scenario-controller
+  namespace: kubecouncil-demo-control
+  labels:
+    app.kubernetes.io/name: scenario-controller
+    app.kubernetes.io/part-of: kubecouncil
+    kubecouncil.io/demo-only: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scenario-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scenario-controller
+        app.kubernetes.io/part-of: kubecouncil
+        kubecouncil.io/demo-only: "true"
+    spec:
+      serviceAccountName: scenario-controller
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: scenario-controller
+          image: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil/kubecouncil-scenario-controller@sha256:31ca22bb21aa818f29330d4a0e8c42a61082a50f3bd9ac77d32ad6d19e78d5de
+          imagePullPolicy: IfNotPresent
+          command:
+            - uvicorn
+            - app.scenario_controller.api:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+          env:
+            - name: KUBECOUNCIL_DEMO_MODE
+              value: "true"
+            - name: KUBECOUNCIL_APPLICATION_NAMESPACE
+              value: online-boutique
+            - name: RECOMMENDATION_SAFE_MEMORY_LIMIT
+              value: 450Mi
+            - name: RECOMMENDATION_SAFE_MEMORY_REQUEST
+              value: 220Mi
+            - name: RECOMMENDATION_UNSAFE_MEMORY_LIMIT
+              value: 25Mi
+            - name: RECOMMENDATION_UNSAFE_MEMORY_REQUEST
+              value: 25Mi
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true

@@ -344,7 +344,7 @@ def test_checked_in_inventory_matches_the_profile_contract() -> None:
 
     assert inventory.project_id == _profile().project_id
     assert inventory.firestore_location == _profile().firestore.location
-    assert set(inventory.image_references) == {"backend", "frontend"}
+    assert set(inventory.image_references) == {"backend", "frontend", "scenario_controller"}
 
 
 def test_rendered_manifest_scanner_rejects_placeholders_and_legacy_authority() -> None:

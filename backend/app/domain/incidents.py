@@ -207,6 +207,14 @@ class EvidenceMapping(KubeCouncilModel):
         return self
 
 
+class AlertMapping(KubeCouncilModel):
+    """Profile-owned Cloud Monitoring policy identity mapped to one declared workload."""
+
+    provider: Literal["cloud_monitoring"] = "cloud_monitoring"
+    policy_name: str = Field(min_length=1, max_length=500)
+    target: WorkloadReference
+
+
 class ObservabilityLink(KubeCouncilModel):
     """A safe deep link to a provider-owned observability view."""
 
@@ -237,6 +245,7 @@ class ApplicationProfile(KubeCouncilModel):
     executor_role: str = Field(min_length=1)
     workloads: tuple[ManagedWorkload, ...] = Field(min_length=1)
     critical_journeys: tuple[CriticalJourney, ...] = Field(min_length=1)
+    alert_mappings: tuple[AlertMapping, ...] = ()
     evidence_mappings: tuple[EvidenceMapping, ...] = Field(min_length=1)
     observability_links: tuple[ObservabilityLink, ...] = ()
     evidence_budget: EvidenceBudget
@@ -289,6 +298,15 @@ class ApplicationProfile(KubeCouncilModel):
             for mapping in self.evidence_mappings
         ):
             raise ValueError("evidence mappings must target a declared workload")
+        if len({mapping.policy_name for mapping in self.alert_mappings}) != len(
+            self.alert_mappings
+        ):
+            raise ValueError("application profile alert policy names must be unique")
+        if any(
+            mapping.target not in {workload.reference for workload in self.workloads}
+            for mapping in self.alert_mappings
+        ):
+            raise ValueError("alert mappings must target a declared workload")
         link_keys = {(link.source, link.url) for link in self.observability_links}
         if len(link_keys) != len(self.observability_links):
             raise ValueError("application profile observability links must be unique")

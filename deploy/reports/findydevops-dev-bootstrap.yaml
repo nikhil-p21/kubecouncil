@@ -1,5 +1,5 @@
 profile_id: findydevops-dev
-recorded_at: "2026-07-12T05:51:04Z"
+recorded_at: "2026-07-12T07:12:23Z"
 sanitized: true
 credentials_persisted: false
 operator_confirmed:
@@ -25,6 +25,7 @@ created_by_bootstrap:
 verified_image_digests:
   backend: sha256:2cde6d17600de23b44c399eee48da82d8a299fa515bd8ed9453351451d45b331
   frontend: sha256:bae6d6fa1f209d00f68e333675fe6c1b19a1ba359d5d2145ddce02620b386fb3
+  scenario_controller: sha256:31ca22bb21aa818f29330d4a0e8c42a61082a50f3bd9ac77d32ad6d19e78d5de
 drift: []
 iap_principals:
   viewers:
@@ -39,6 +40,21 @@ smoke:
   logging_read: true
   monitoring_read: true
   temporary_resources_removed: true
+kc24_live_validation:
+  online_boutique_deployments_available: 12
+  scenario_controller_ready: true
+  recommendation_oom:
+    baseline_memory: {request: 220Mi, limit: 450Mi}
+    injected_memory: {request: 25Mi, limit: 25Mi}
+    observed: OOMKilled and CrashLoopBackOff
+    reset_verified: true
+  redis_outage:
+    injected_replicas: 0
+    observed: cart storage connection failures and steady-load request failures
+    reset_replicas: 1
+    reset_verified: true
+  isolated_audit_events: 4
+  target_ground_truth_metadata_absent: true
 deferred_to_kc25:
   - add judge identities as Viewer-only principals when provided
   - attach IAP to the live ingress or backend service

@@ -1,0 +1,158 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubecouncil-application-profile
+  namespace: kubecouncil-system
+  labels:
+    app.kubernetes.io/part-of: kubecouncil
+    kubecouncil.io/environment: findydevops-dev
+data:
+  profile.yaml: |
+    application_id: online-boutique
+    display_name: Online Boutique
+    version: v0.10.5-kc24
+    namespace: online-boutique
+    namespaces: [online-boutique]
+    investigator_identity: serviceaccount:kubecouncil-system:investigator
+    investigator_role: investigator-read
+    executor_identity: serviceaccount:kubecouncil-system:executor
+    executor_role: executor-write
+    workloads:
+      - reference: {namespace: online-boutique, name: frontend}
+        criticality: critical
+        replica_bounds: {minimum: 1, maximum: 5}
+        executable: true
+        allowed_actions: [rollback_deployment, scale_deployment, restart_deployment]
+        dependencies: [productcatalogservice, currencyservice, cartservice, recommendationservice, shippingservice, checkoutservice, adservice]
+      - reference: {namespace: online-boutique, name: checkoutservice}
+        criticality: critical
+        replica_bounds: {minimum: 1, maximum: 3}
+        executable: true
+        allowed_actions: [rollback_deployment, scale_deployment, restart_deployment]
+        dependencies: [productcatalogservice, shippingservice, paymentservice, emailservice, currencyservice, cartservice]
+      - reference: {namespace: online-boutique, name: cartservice}
+        criticality: critical
+        replica_bounds: {minimum: 1, maximum: 3}
+        executable: true
+        allowed_actions: [rollback_deployment, scale_deployment, restart_deployment]
+        dependencies: [redis-cart]
+      - reference: {namespace: online-boutique, name: recommendationservice}
+        criticality: important
+        replica_bounds: {minimum: 1, maximum: 5}
+        executable: true
+        allowed_actions: [rollback_deployment, scale_deployment, restart_deployment]
+        dependencies: [productcatalogservice]
+      - reference: {namespace: online-boutique, name: productcatalogservice}
+        criticality: important
+        replica_bounds: {minimum: 1, maximum: 3}
+        executable: true
+        allowed_actions: [rollback_deployment, scale_deployment, restart_deployment]
+      - reference: {namespace: online-boutique, name: currencyservice}
+        criticality: important
+        replica_bounds: {minimum: 1, maximum: 3}
+        executable: true
+        allowed_actions: [rollback_deployment, scale_deployment, restart_deployment]
+      - reference: {namespace: online-boutique, name: shippingservice}
+        criticality: important
+        replica_bounds: {minimum: 1, maximum: 3}
+        executable: true
+        allowed_actions: [rollback_deployment, scale_deployment, restart_deployment]
+      - reference: {namespace: online-boutique, name: paymentservice}
+        criticality: important
+        replica_bounds: {minimum: 1, maximum: 3}
+        executable: true
+        allowed_actions: [rollback_deployment, scale_deployment, restart_deployment]
+      - reference: {namespace: online-boutique, name: emailservice}
+        criticality: important
+        replica_bounds: {minimum: 1, maximum: 3}
+        executable: true
+        allowed_actions: [rollback_deployment, scale_deployment, restart_deployment]
+      - reference: {namespace: online-boutique, name: adservice}
+        criticality: optional
+        replica_bounds: {minimum: 1, maximum: 2}
+        executable: true
+        allowed_actions: [rollback_deployment, scale_deployment, restart_deployment]
+      - reference: {namespace: online-boutique, name: redis-cart}
+        criticality: critical
+        replica_bounds: {minimum: 1, maximum: 1}
+        executable: false
+        protected_dependency: true
+    critical_journeys:
+      - name: checkout
+        success_rate_minimum: 0.99
+        p95_latency_ms_maximum: 1500
+        minimum_request_count: 100
+        synthetic_probe:
+          name: frontend-checkout-path
+          target: http://frontend.online-boutique.svc.cluster.local/
+          repetitions: 3
+    alert_mappings:
+      - policy_name: kc-online-boutique-recommendation-restarts
+        target: {namespace: online-boutique, name: recommendationservice}
+      - policy_name: kc-online-boutique-redis-unavailable
+        target: {namespace: online-boutique, name: redis-cart}
+    evidence_mappings:
+      - source: kubernetes
+        kind: workload_state
+        scope: {namespace: online-boutique, name: recommendationservice}
+        identifier: recommendationservice-rollout
+      - source: kubernetes
+        kind: pod_events
+        scope: {namespace: online-boutique, name: recommendationservice}
+        identifier: recommendationservice-events
+      - source: cloud_logging
+        kind: pod_logs
+        scope: {namespace: online-boutique, name: recommendationservice}
+        identifier: recommendationservice-logs
+      - source: cloud_monitoring
+        kind: metrics
+        scope: {namespace: online-boutique, name: recommendationservice}
+        identifier: recommendationservice-restarts
+        query_template: sum(kube_pod_container_status_restarts_total{namespace="online-boutique",container="server"})
+      - source: kubernetes
+        kind: change_history
+        scope: {namespace: online-boutique, name: recommendationservice}
+        identifier: recommendationservice-revisions
+      - source: cloud_monitoring
+        kind: alert_policy
+        scope: {namespace: online-boutique, name: recommendationservice}
+        identifier: recommendationservice-alert-policy
+      - source: kubernetes
+        kind: workload_state
+        scope: {namespace: online-boutique, name: redis-cart}
+        identifier: redis-cart-workload-state
+      - source: kubernetes
+        kind: pod_events
+        scope: {namespace: online-boutique, name: redis-cart}
+        identifier: redis-cart-events
+      - source: cloud_logging
+        kind: pod_logs
+        scope: {namespace: online-boutique, name: redis-cart}
+        identifier: redis-cart-logs
+      - source: cloud_monitoring
+        kind: metrics
+        scope: {namespace: online-boutique, name: redis-cart}
+        identifier: redis-cart-availability
+        query_template: kube_deployment_status_replicas_available{namespace="online-boutique",deployment="redis-cart"}
+      - source: cloud_monitoring
+        kind: alert_policy
+        scope: {namespace: online-boutique, name: redis-cart}
+        identifier: redis-cart-alert-policy
+    observability_links:
+      - label: Online Boutique logs
+        source: cloud_logging
+        url: https://console.cloud.google.com/logs/query?project=findydevops
+      - label: Online Boutique metrics
+        source: cloud_monitoring
+        url: https://console.cloud.google.com/monitoring/metrics-explorer?project=findydevops
+    evidence_budget:
+      maximum_queries_per_specialist: 2
+      maximum_log_lines: 100
+      maximum_metric_series: 20
+      maximum_window_minutes: 30
+    recovery_criteria:
+      critical_journey_name: checkout
+      required_stable_windows: 2
+      stabilization_window_seconds: 60
+      allow_synthetic_availability_fallback: true
+      latency_requires_application_traffic: true

@@ -116,10 +116,12 @@ images:
     available: false
   scenario_controller:
     repository: asia-northeast1-docker.pkg.dev/findydevops/kubecouncil/kubecouncil-scenario-controller
-    source_commit: 4e1f6a84c445faf94338f094ca7d4821da1f1ce1
-    tag: 4e1f6a84c445
+    source_commit: bcc5223c20c5fb291616309f1a58b86eefd2d03f
+    tag: bcc5223c20c5-live27
+    digest: sha256:31ca22bb21aa818f29330d4a0e8c42a61082a50f3bd9ac77d32ad6d19e78d5de
     platform: linux/amd64
-    available: false
+    build_context: backend
+    available: true
 
 github:
   repository: nikhil-p21/kubecouncil

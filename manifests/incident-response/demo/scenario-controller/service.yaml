@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: scenario-controller
+  namespace: kubecouncil-demo-control
+  labels:
+    app.kubernetes.io/name: scenario-controller
+    kubecouncil.io/demo-only: "true"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: scenario-controller
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
